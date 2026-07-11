@@ -30,6 +30,14 @@ is attached — MicroPythonOS auto-detects it at boot and registers its
 keyboard as just another input source, so `bomberboy.py` doesn't need to
 know or care which keyboard the key events are actually coming from.
 
+The Fri3d DJ Add-on is also probed directly at app startup for big-button
+accessibility input. Its existing 8-button pad order is translated into a
+left-cluster D-pad for player 1, plus large bomb buttons for player 1 and, in
+2-player mode, player 2. The gameplay mapping lives in `dj_addon.py` so it is
+easy to adjust after validating the physical layout on real hardware. If the
+add-on or its driver is unavailable, Bomberboy silently keeps the normal
+keyboard/joystick controls.
+
 Remote two-badge multiplayer is not wired into the UI yet, but the game model
 now has the first deterministic building block it needs: `Game(level, seed=...)`
 passes the seed through to random level generation, and `Level.build_grid(seed=...)`
