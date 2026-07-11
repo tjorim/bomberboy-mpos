@@ -1,0 +1,87 @@
+"""Draws the Bomberboy grid onto a single LVGL canvas.
+
+Only tiles whose visual state changed since the last frame are redrawn
+(dirty tracking keyed by a small per-cell signature), so a normal tick --
+a couple of players moving, a bomb blinking -- costs a handful of tile
+redraws rather than repainting all WIDTH*HEIGHT cells.
+"""
+
+import lvgl as lv
+
+import sprites
+from model import Bomb, Crate, Gunpowder, Player, PowerUp, Portal, Wall
+
+TILE_SIZE = sprites.TILE_SIZE
+
+
+class BoardRenderer:
+    def __init__(self, parent, game):
+        self.game = game
+        width_px = game.width * TILE_SIZE
+        height_px = game.height * TILE_SIZE
+        self.canvas = lv.canvas(parent)
+        self.canvas.set_size(width_px, height_px)
+        self._buf = bytearray(width_px * height_px * 4)
+        self.canvas.set_buffer(self._buf, width_px, height_px, lv.COLOR_FORMAT.NATIVE)
+        self._last_signature = {}
+
+    def _tile_signature(self, x, y):
+        tile = self.game.tile_at(x, y)
+        burning = self.game.is_burning(x, y)
+        if isinstance(tile, Player):
+            return ("player", tile.player_id, tile.facing, tile.is_dead)
+        if isinstance(tile, Bomb):
+            return ("bomb",)
+        if isinstance(tile, Crate):
+            return ("crate", burning)
+        if isinstance(tile, Gunpowder):
+            return ("gunpowder", burning)
+        if isinstance(tile, PowerUp):
+            return ("powerup", tile.kind, tile.revealed, burning)
+        if isinstance(tile, Portal):
+            return ("portal", tile.portal_id)
+        if isinstance(tile, Wall):
+            return ("wall",)
+        return ("floor", burning)
+
+    def _sprite_for(self, signature):
+        kind = signature[0]
+        if kind == "floor":
+            return sprites.explosion_sprite() if signature[1] else sprites.floor_sprite()
+        if kind == "wall":
+            return sprites.wall_sprite()
+        if kind == "crate":
+            return sprites.explosion_sprite() if signature[1] else sprites.crate_sprite()
+        if kind == "gunpowder":
+            return sprites.explosion_sprite() if signature[1] else sprites.gunpowder_sprite()
+        if kind == "bomb":
+            return sprites.bomb_sprite()
+        if kind == "portal":
+            return sprites.portal_sprite(signature[1] // 2)
+        if kind == "powerup":
+            _, power_kind, revealed, burning = signature
+            if burning and not revealed:
+                return sprites.explosion_sprite()
+            if revealed:
+                return sprites.powerup_sprite(power_kind)
+            return sprites.crate_sprite()
+        if kind == "player":
+            _, player_id, facing, dead = signature
+            return sprites.player_sprite(player_id, facing, dead=dead)
+        return sprites.floor_sprite()
+
+    def _draw_tile(self, x, y, pixel_grid):
+        ox, oy = x * TILE_SIZE, y * TILE_SIZE
+        for py in range(TILE_SIZE):
+            row = pixel_grid[py]
+            for px in range(TILE_SIZE):
+                self.canvas.set_px(ox + px, oy + py, lv.color_hex(row[px]), lv.OPA.COVER)
+
+    def render(self, force=False):
+        for x in range(self.game.width):
+            for y in range(self.game.height):
+                signature = self._tile_signature(x, y)
+                if not force and self._last_signature.get((x, y)) == signature:
+                    continue
+                self._last_signature[(x, y)] = signature
+                self._draw_tile(x, y, self._sprite_for(signature))
