@@ -30,6 +30,13 @@ is attached — MicroPythonOS auto-detects it at boot and registers its
 keyboard as just another input source, so `bomberboy.py` doesn't need to
 know or care which keyboard the key events are actually coming from.
 
+Remote two-badge multiplayer is not wired into the UI yet, but the game model
+now has the first deterministic building block it needs: `Game(level, seed=...)`
+passes the seed through to random level generation, and `Level.build_grid(seed=...)`
+uses a local RNG for crate powerup placement. Two badges that agree on the same
+seed can independently build matching mazes without sending the full board over
+the radio.
+
 The board is also redesigned smaller (15x11 tiles at 20px instead of the
 original's 21x15 at 40px) to fit the badge's 320x240 screen, though it's
 built from the same even-coordinate "pillar" maze algorithm as the original.

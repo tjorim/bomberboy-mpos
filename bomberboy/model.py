@@ -199,10 +199,11 @@ class Player:
 
 
 class Game:
-    def __init__(self, level):
+    def __init__(self, level, seed=None):
         self.width = level.width
         self.height = level.height
-        self.grid = level.build_grid()
+        self.seed = seed
+        self.grid = level.build_grid(seed=seed)
         self.players = level.place_players(self.grid)
         self.portals = level.portals
         self.bombs = []
