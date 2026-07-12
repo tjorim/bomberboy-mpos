@@ -66,6 +66,26 @@ class MovementTests(unittest.TestCase):
         self.assertEqual((self.p1.x, self.p1.y), (2, 1))
         self.assertEqual((self.p2.x, self.p2.y), (1, 1))
 
+    def test_a_dead_player_blocks_movement_instead_of_being_erased(self):
+        # Player.is_walkable() is unconditionally True (dead or alive),
+        # and player_at() deliberately excludes dead players so they
+        # don't participate in kick/shift/swap -- but move_player() used
+        # to fall through to the generic floor-walk path in that case,
+        # using the dead Player object itself as "the tile left behind".
+        # That erased the body from the grid (dedicated dead-player
+        # sprite art exists specifically so it stays visible) and left
+        # the walker's own standing_on pointing at a Player instead of a
+        # real tile.
+        self.game.set_tile(self.p2.x, self.p2.y, Floor())
+        self.p2.x, self.p2.y = self.p1.x + 1, self.p1.y
+        self.game.set_tile(self.p2.x, self.p2.y, self.p2)
+        self.p2.lives = 0
+        self.assertTrue(self.p2.is_dead)
+
+        self.assertFalse(self.game.move_player(self.p1, RIGHT))
+        self.assertEqual((self.p1.x, self.p1.y), (1, 1))
+        self.assertIs(self.game.tile_at(self.p2.x, self.p2.y), self.p2)
+
 
 class BombTests(unittest.TestCase):
     def setUp(self):

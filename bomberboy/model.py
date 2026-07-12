@@ -372,6 +372,19 @@ class Game:
         if isinstance(target, Portal):
             self._use_portal(player, target)
             return True
+        if isinstance(target, Player):
+            # Only a dead player's tile can reach here -- player_at()
+            # above already found and handled any live occupant.
+            # Player.is_walkable() is unconditionally True, so without
+            # this check the walker would fall through to the generic
+            # _enter_tile() below with the dead Player object itself as
+            # "the tile being left behind": that erases the body from the
+            # grid entirely (dedicated dead-player sprite art exists
+            # specifically so bodies stay visible -- see
+            # sprites.player_sprite(dead=True)) and leaves the walker's
+            # own standing_on pointing at a Player instead of a real
+            # tile. Simplest correct behavior: a body blocks the tile.
+            return False
 
         self._enter_tile(player, tx, ty, target)
         return True
