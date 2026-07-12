@@ -154,6 +154,10 @@ class Bomb:
         )
         return int(elapsed // period) % 2
 
+    def remaining_fuse_ms(self, now):
+        """Milliseconds until detonation according to the game's clock."""
+        return max(0, BOMB_FUSE_MS - _elapsed_ms(self.placed_at, now))
+
 
 class PowerUp:
     def __init__(self, kind):
@@ -370,8 +374,7 @@ class Game:
             self._enter_tile(player, tx, ty, Floor())
             return True
         if isinstance(target, Portal):
-            self._use_portal(player, target)
-            return True
+            return self._use_portal(player, target)
         if isinstance(target, Player):
             # Only a dead player's tile can reach here -- player_at()
             # above already found and handled any live occupant.
@@ -467,13 +470,14 @@ class Game:
     def _use_portal(self, player, portal):
         dest = portal.other
         if dest is None or dest.occupied:
-            return
+            return False
         portal.occupied = False
         self.set_tile(player.x, player.y, player.standing_on or Floor())
         player.standing_on = dest
         player.x, player.y = dest.x, dest.y
         dest.occupied = True
         self.set_tile(dest.x, dest.y, player)
+        return True
 
     def _apply_powerup(self, player, kind):
         if kind == EXTRA_BOMB:
@@ -528,6 +532,52 @@ class Game:
             self.winner = alive[0] if alive else None
 
     # -- shrinking arena ----------------------------------------------------
+
+    def is_shrinking(self):
+        return self._shrink_started
+
+    def upcoming_shrink_positions(self, count=2):
+        """Return the next wall pairs without advancing shrink state.
+
+        Each shrink placement affects two mirrored positions. Transition
+        ticks that only switch from a horizontal to a vertical edge are
+        skipped so callers get actual future wall locations.
+        """
+        if not self._shrink_started or count <= 0:
+            return []
+        i = self._shrink_i
+        j = self._shrink_j
+        k = self._shrink_k
+        horizontal = self._shrink_horizontal
+        upcoming = []
+        guard = self.width * self.height * 2
+        while len(upcoming) < count and guard > 0:
+            guard -= 1
+            if horizontal:
+                if j < self.width - i:
+                    upcoming.append(((j, i), (self.width - (j + 1), self.height - (i + 1))))
+                    j += 1
+                else:
+                    horizontal = False
+            else:
+                if k < self.height - (i + 1):
+                    upcoming.append(((self.width - (i + 1), k), (i, self.height - (k + 1))))
+                    k += 1
+                else:
+                    horizontal = True
+                if j == self.width - i and k == self.height - (i + 1):
+                    i += 1
+                    j = i
+                    k = i + 1
+                    horizontal = True
+                elif horizontal:
+                    # The rectangular board finishes with k already past
+                    # its vertical limit, so the equality above can no
+                    # longer advance to another ring. There are no future
+                    # positions to preview; do not spin through the guard on
+                    # every AI think-tick.
+                    break
+        return upcoming
 
     def _update_shrink(self, now):
         if not self._shrink_started:

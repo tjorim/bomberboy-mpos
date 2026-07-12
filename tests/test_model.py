@@ -529,6 +529,19 @@ class PowerUpAndPortalTests(unittest.TestCase):
         game.move_player(p2, RIGHT)
         self.assertEqual((p2.x, p2.y), (portal_b.x, portal_b.y))
 
+    def test_move_reports_failure_when_portal_destination_is_occupied(self):
+        game = Game(PortalMazeLevel())
+        p1, _p2 = game.players
+        portal = game.portals[0]
+        portal.other.occupied = True
+        game.set_tile(p1.x, p1.y, Floor())
+        p1.x, p1.y = portal.x - 1, portal.y
+        p1.standing_on = Floor()
+        game.set_tile(p1.x, p1.y, p1)
+
+        self.assertFalse(game.move_player(p1, RIGHT))
+        self.assertEqual((p1.x, p1.y), (portal.x - 1, portal.y))
+
 
 class GameOverTests(unittest.TestCase):
     def test_game_ends_when_a_player_runs_out_of_lives(self):
@@ -588,6 +601,28 @@ class ArenaShrinkTests(unittest.TestCase):
         self.assertTrue(game.game_over)
         # No wall placed this step -- the kill takes priority.
         self.assertNotIsInstance(game.tile_at(1, 1), Wall)
+
+    def test_upcoming_positions_preview_wall_pairs_without_advancing_state(self):
+        game = Game(OpenArenaLevel())
+        game._shrink_started = True
+
+        self.assertEqual(
+            game.upcoming_shrink_positions(2),
+            [((1, 1), (13, 9)), ((2, 1), (12, 9))],
+        )
+        self.assertEqual((game._shrink_i, game._shrink_j, game._shrink_k), (1, 1, 2))
+
+    def test_upcoming_positions_stop_immediately_after_rectangular_arena_is_consumed(self):
+        game = Game(OpenArenaLevel())
+        game._shrink_started = True
+        # Terminal state reached after the fifth horizontal ring on a 15x11
+        # board: both edge ranges are exhausted and k has passed its limit.
+        game._shrink_i = 5
+        game._shrink_j = 10
+        game._shrink_k = 6
+        game._shrink_horizontal = True
+
+        self.assertEqual(game.upcoming_shrink_positions(2), [])
 
     def test_second_spot_only_killed_when_first_spot_is_clear(self):
         game = Game(OpenArenaLevel())
