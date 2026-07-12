@@ -209,7 +209,12 @@ class Bomberboy(Activity):
         group = lv.group_get_default()
         group.remove_all_objs()
         group.add_obj(screen)
-        group.focus_obj(screen)
+        # lv_group_focus_obj() takes the object directly -- it's not a
+        # group method the way add_obj()/remove_all_objs() are (those
+        # genuinely take the group as their first C-API argument; this
+        # one doesn't take a group at all). group.focus_obj(screen) would
+        # raise AttributeError on real hardware.
+        lv.group_focus_obj(screen)
         screen.add_event_cb(self._on_key, lv.EVENT.KEY, None)
 
         self.setContentView(screen)
