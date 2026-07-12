@@ -612,6 +612,18 @@ class ArenaShrinkTests(unittest.TestCase):
         )
         self.assertEqual((game._shrink_i, game._shrink_j, game._shrink_k), (1, 1, 2))
 
+    def test_upcoming_positions_stop_immediately_after_rectangular_arena_is_consumed(self):
+        game = Game(OpenArenaLevel())
+        game._shrink_started = True
+        # Terminal state reached after the fifth horizontal ring on a 15x11
+        # board: both edge ranges are exhausted and k has passed its limit.
+        game._shrink_i = 5
+        game._shrink_j = 10
+        game._shrink_k = 6
+        game._shrink_horizontal = True
+
+        self.assertEqual(game.upcoming_shrink_positions(2), [])
+
     def test_second_spot_only_killed_when_first_spot_is_clear(self):
         game = Game(OpenArenaLevel())
         p1, p2 = game.players

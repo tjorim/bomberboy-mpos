@@ -570,6 +570,13 @@ class Game:
                     j = i
                     k = i + 1
                     horizontal = True
+                elif horizontal:
+                    # The rectangular board finishes with k already past
+                    # its vertical limit, so the equality above can no
+                    # longer advance to another ring. There are no future
+                    # positions to preview; do not spin through the guard on
+                    # every AI think-tick.
+                    break
         return upcoming
 
     def _update_shrink(self, now):
