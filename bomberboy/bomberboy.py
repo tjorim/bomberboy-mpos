@@ -467,10 +467,20 @@ class Bomberboy(Activity):
             return
         bombs_before = len(self.game.bombs)
         lives_before = {p.player_id: p.lives for p in self.game.players}
+        on_fire_before = {p.player_id: p.on_fire for p in self.game.players}
         self.game.tick()
         if len(self.game.bombs) < bombs_before:
             self._play("BombeExplode.wav")
         for player in self.game.players:
+            # Warning.wav previously only played once the ~1-second burn
+            # resolved and a life was actually lost (model.BOMB_BURN_MS) --
+            # a delayed damage notification, not a warning. Play it the
+            # instant a player catches fire too, while they still have a
+            # moment to react (though move_player()/place_bomb() both
+            # already block input while on_fire, so "react" here mostly
+            # means "notice why the badge stopped responding").
+            if player.on_fire and not on_fire_before[player.player_id]:
+                self._play("Warning.wav")
             if player.lives < lives_before[player.player_id]:
                 self._play("Die.wav" if player.is_dead else "Warning.wav")
         self._refresh()
