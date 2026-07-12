@@ -53,6 +53,7 @@ class MovementTests(unittest.TestCase):
     def test_wall_blocks_movement(self):
         # player 1 starts at (1,1); moving UP/LEFT runs into the border wall.
         self.assertFalse(self.game.move_player(self.p1, UP))
+        time.sleep(0.2)  # each check should fail on the wall, not the move cooldown
         self.assertFalse(self.game.move_player(self.p1, LEFT))
         self.assertEqual((self.p1.x, self.p1.y), (1, 1))
 
@@ -156,6 +157,42 @@ class BombTests(unittest.TestCase):
         self.assertEqual(p2.lives, lives_before - 1)
 
 
+class BombBlinkPhaseTests(unittest.TestCase):
+    """Bomb.blink_phase() is a presentation-only hint (0 = normal, 1 =
+    "flash") consumed by render.py to blink a bomb faster as its fuse
+    runs down -- pure elapsed-time math, so it's tested here directly
+    rather than through the LVGL-facing renderer, which can't be
+    unit-tested under plain CPython at all."""
+
+    @staticmethod
+    def _bomb():
+        return model.Bomb(owner=None, x=0, y=0, under=Floor(), placed_at=0)
+
+    def test_no_blink_for_the_first_half_of_the_fuse(self):
+        bomb = self._bomb()
+        self.assertEqual(bomb.blink_phase(0), 0)
+        self.assertEqual(bomb.blink_phase(model.BOMB_FUSE_MS // 2 - 1), 0)
+
+    def test_slow_blink_starts_at_the_halfway_point(self):
+        bomb = self._bomb()
+        start = model.BOMB_FUSE_MS // 2
+        self.assertNotEqual(
+            bomb.blink_phase(start),
+            bomb.blink_phase(start + model.BOMB_BLINK_WARN_PERIOD_MS),
+        )
+
+    def test_fast_blink_starts_in_the_final_quarter(self):
+        bomb = self._bomb()
+        start = model.BOMB_FUSE_MS - model.BOMB_BLINK_CRITICAL_REMAINING_MS
+        self.assertNotEqual(
+            bomb.blink_phase(start),
+            bomb.blink_phase(start + model.BOMB_BLINK_CRITICAL_PERIOD_MS),
+        )
+
+    def test_critical_blink_is_faster_than_warning_blink(self):
+        self.assertLess(model.BOMB_BLINK_CRITICAL_PERIOD_MS, model.BOMB_BLINK_WARN_PERIOD_MS)
+
+
 class ShiftAndKickTests(unittest.TestCase):
     def setUp(self):
         fast_roll_timer()
@@ -211,6 +248,32 @@ class ShiftAndKickTests(unittest.TestCase):
         self.assertEqual((bomb.x, bomb.y), (3, 1))  # blocked by the wall at (4,1)
         self.assertIsNone(bomb.rolling)
 
+    def test_kicked_bomb_stops_before_a_portal(self):
+        # Portal.is_walkable() is just "not occupied", so without an
+        # explicit check a rolling bomb would park on top of a portal
+        # instead of stopping -- with nothing to actually teleport it the
+        # way _use_portal() teleports a player, leaving the grid showing
+        # the Bomb instead of the Portal while portal.occupied never gets
+        # set, so a player could still teleport into that same tile and
+        # silently overwrite the bomb.
+        game = Game(PortalMazeLevel())
+        p1 = game.players[0]
+        p1.can_kick = True
+        portal = game.portals[0].other  # (11, 7); room to its left for a clear lane
+        for x in (portal.x - 3, portal.x - 2, portal.x - 1):
+            game.set_tile(x, portal.y, Floor())
+        bomb = self._place_bomb(game, portal.x - 2, portal.y, p1)
+        p1.x, p1.y = portal.x - 3, portal.y
+        game.set_tile(p1.x, p1.y, p1)
+        self.assertTrue(game.move_player(p1, RIGHT))
+        self.assertEqual((bomb.x, bomb.y), (portal.x - 1, portal.y))
+        time.sleep(0.02)
+        game.tick()
+        self.assertEqual((bomb.x, bomb.y), (portal.x - 1, portal.y))  # blocked by the portal
+        self.assertIsNone(bomb.rolling)
+        self.assertIs(game.tile_at(portal.x, portal.y), portal)
+        self.assertFalse(portal.occupied)
+
     def test_kicked_bomb_stops_before_hitting_a_player(self):
         game = Game(OpenArenaLevel())
         p1, p2 = game.players
@@ -225,6 +288,67 @@ class ShiftAndKickTests(unittest.TestCase):
         game.tick()
         self.assertEqual((bomb.x, bomb.y), (3, 1))  # blocked by p2 at (4,1)
         self.assertIsNone(bomb.rolling)
+
+    def test_cannot_kick_a_bomb_out_from_under_the_player_standing_on_it(self):
+        # place_bomb() puts the Bomb object in the grid at the owner's own
+        # position (not the player) so blast-chaining can find it there --
+        # move_player() used to check isinstance(target, Bomb) before ever
+        # checking whether a live player (the owner, mid-placement) still
+        # occupies that tile, so another player with the kick powerup could
+        # roll the bomb away without the standing owner moving at all.
+        game = Game(OpenArenaLevel())
+        p1, p2 = game.players
+        p2.can_kick = True
+        game.set_tile(p1.x, p1.y, Floor())
+        p1.x, p1.y = 5, 5
+        game.set_tile(p1.x, p1.y, p1)
+        p1.standing_on = Floor()
+        self.assertTrue(game.place_bomb(p1))
+        bomb = game.bombs[0]
+        self.assertIs(game.tile_at(p1.x, p1.y), bomb)
+
+        game.set_tile(p2.x, p2.y, Floor())
+        p2.x, p2.y = 4, 5
+        game.set_tile(p2.x, p2.y, p2)
+
+        self.assertFalse(game.move_player(p2, RIGHT))
+        self.assertEqual((p1.x, p1.y), (5, 5))
+        self.assertEqual((p2.x, p2.y), (4, 5))
+        self.assertEqual((bomb.x, bomb.y), (5, 5))
+        self.assertIsNone(bomb.rolling)
+        self.assertIs(p1.standing_on, bomb)
+
+    def test_cannot_swap_when_the_initiating_player_is_standing_on_a_bomb(self):
+        # Symmetric to the case above: move_player() originally only
+        # checked isinstance(target, Bomb) -- the *destination* tile --
+        # so it missed the case where `player`, the one initiating the
+        # move, is themselves standing on their own bomb. target there
+        # is just an ordinary Player (occupant), so the swap branch would
+        # have run and _swap_players() would have overwritten player's
+        # own grid cell (holding the Bomb) with the swapped-in occupant,
+        # losing the Bomb the grid needs there for fuse/blast-chain
+        # detection -- and later erasing whoever ends up standing there
+        # once the bomb explodes.
+        game = Game(OpenArenaLevel())
+        p1, p2 = game.players
+        game.set_tile(p1.x, p1.y, Floor())
+        p1.x, p1.y = 5, 5
+        game.set_tile(p1.x, p1.y, p1)
+        p1.standing_on = Floor()
+        self.assertTrue(game.place_bomb(p1))
+        bomb = game.bombs[0]
+        self.assertIs(game.tile_at(p1.x, p1.y), bomb)
+
+        game.set_tile(p2.x, p2.y, Floor())
+        p2.x, p2.y = 6, 5
+        game.set_tile(p2.x, p2.y, p2)
+
+        self.assertFalse(game.move_player(p1, RIGHT))
+        self.assertEqual((p1.x, p1.y), (5, 5))
+        self.assertEqual((p2.x, p2.y), (6, 5))
+        self.assertEqual((bomb.x, bomb.y), (5, 5))
+        self.assertIs(p1.standing_on, bomb)
+        self.assertIs(game.tile_at(5, 5), bomb)
 
     def test_kick_takes_priority_over_shift_when_player_has_both(self):
         game = Game(OpenArenaLevel())
@@ -249,6 +373,7 @@ class ShiftAndKickTests(unittest.TestCase):
         # And it reappears on the grid once the player steps off again
         # (back the way they came -- (3,1) now holds the shifted bomb, and
         # straight up/down from (2,1) is a pillar wall in this layout).
+        time.sleep(0.2)  # clear the move cooldown (model.MOVE_COOLDOWN_MS)
         self.assertTrue(game.move_player(p1, LEFT))
         self.assertIsInstance(game.tile_at(2, 1), Gunpowder)
 
@@ -296,6 +421,38 @@ class PowerUpAndPortalTests(unittest.TestCase):
         p1.standing_on = Floor()
         self.assertTrue(game.move_player(p1, RIGHT))
         self.assertEqual((p1.x, p1.y), (portal_b.x, portal_b.y))
+
+    def test_portal_stops_blocking_teleport_after_the_player_walks_away(self):
+        # dest.occupied was only ever cleared by _use_portal() itself (on
+        # the *source* side of a later teleport) -- walking away from a
+        # portal normally, through _enter_tile(), never cleared it, so a
+        # portal stayed permanently un-teleportable-into for the rest of
+        # the match after its first arrival, even with nobody standing on
+        # it anymore.
+        game = Game(PortalMazeLevel())
+        p1, p2 = game.players
+        portal_a = game.portals[0]
+        portal_b = portal_a.other
+
+        p1.x, p1.y = portal_a.x - 1, portal_a.y
+        game.set_tile(p1.x, p1.y, p1)
+        p1.standing_on = Floor()
+        self.assertTrue(game.move_player(p1, RIGHT))
+        self.assertEqual((p1.x, p1.y), (portal_b.x, portal_b.y))
+        self.assertTrue(portal_b.occupied)
+
+        # Walk away to plain floor -- not back through the portal.
+        game.set_tile(portal_b.x + 1, portal_b.y, Floor())
+        time.sleep(0.2)  # clear the move cooldown (model.MOVE_COOLDOWN_MS)
+        self.assertTrue(game.move_player(p1, RIGHT))
+        self.assertFalse(portal_b.occupied)
+
+        # A second player can now teleport into portal_b too.
+        p2.x, p2.y = portal_a.x - 1, portal_a.y
+        game.set_tile(p2.x, p2.y, p2)
+        p2.standing_on = Floor()
+        game.move_player(p2, RIGHT)
+        self.assertEqual((p2.x, p2.y), (portal_b.x, portal_b.y))
 
 
 class GameOverTests(unittest.TestCase):
@@ -400,6 +557,57 @@ class DeterministicClockTests(unittest.TestCase):
         now[0] = model.BOMB_FUSE_MS
         game.tick()
         self.assertEqual(len(game.bombs), 0)
+
+
+class MoveCooldownTests(unittest.TestCase):
+    """SPEED_UP used to increment Player.speed with nothing ever reading
+    it, so the powerup had zero gameplay effect. Player.move_cooldown_ms()
+    is the fix: speed divides down the minimum interval between accepted
+    moves.
+
+    OpenArenaLevel gives an open, crate-free lane to move along, but also
+    sets give_max_stats -- including speed = MAX_SPEED -- so every test
+    here resets p1.speed back to 1 (the real default elsewhere) to actually
+    exercise the cooldown instead of the trivially-short one at max speed.
+    """
+
+    def test_first_move_is_never_blocked_even_with_a_clock_starting_at_zero(self):
+        # last_move_at starts as None specifically so this doesn't collide
+        # with an injected clock legitimately starting at 0.
+        now = [0]
+        game = Game(OpenArenaLevel(), clock=lambda: now[0])
+        p1 = game.players[0]
+        p1.speed = 1
+        self.assertTrue(game.move_player(p1, RIGHT))
+
+    def test_move_is_rejected_before_the_cooldown_elapses(self):
+        now = [0]
+        game = Game(OpenArenaLevel(), clock=lambda: now[0])
+        p1 = game.players[0]
+        p1.speed = 1
+        self.assertTrue(game.move_player(p1, RIGHT))
+        pos = (p1.x, p1.y)
+        now[0] = model.MOVE_COOLDOWN_MS - 1
+        self.assertFalse(game.move_player(p1, RIGHT))
+        self.assertEqual((p1.x, p1.y), pos)
+
+    def test_move_succeeds_once_the_cooldown_elapses(self):
+        now = [0]
+        game = Game(OpenArenaLevel(), clock=lambda: now[0])
+        p1 = game.players[0]
+        p1.speed = 1
+        self.assertTrue(game.move_player(p1, RIGHT))
+        now[0] = model.MOVE_COOLDOWN_MS
+        self.assertTrue(game.move_player(p1, RIGHT))
+
+    def test_higher_speed_shortens_the_cooldown(self):
+        now = [0]
+        game = Game(OpenArenaLevel(), clock=lambda: now[0])
+        p1 = game.players[0]
+        p1.speed = 2  # half the base (speed-1) cooldown
+        self.assertTrue(game.move_player(p1, RIGHT))
+        now[0] = model.MOVE_COOLDOWN_MS // 2
+        self.assertTrue(game.move_player(p1, RIGHT))
 
 
 if __name__ == "__main__":

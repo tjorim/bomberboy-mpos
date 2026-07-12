@@ -73,8 +73,17 @@ class FrameSynchronizer:
         if parsed is None or parsed[0] != "F":
             return False
         _, frame, action, previous_frame, previous_action = parsed
-        self._actions[(frame, self.remote_player_id)] = action
-        if previous_frame >= 0:
+        # Every packet repeats the sender's previous-frame action too (loss
+        # recovery), so by the time a few packets have gone by, that
+        # "previous frame" has usually already been popped and its entries
+        # deleted -- only insert entries for frames not yet consumed, or
+        # every packet after the first would silently leave one orphaned
+        # entry in _actions forever (frame numbers only ever increase, so
+        # a stale entry is never read or deleted once left behind). Over a
+        # long match this is an unbounded memory leak.
+        if frame >= self.frame:
+            self._actions[(frame, self.remote_player_id)] = action
+        if previous_frame >= self.frame:
             self._actions[(previous_frame, self.remote_player_id)] = previous_action
         return True
 

@@ -29,6 +29,29 @@ BOMB_BURN_MS = 1000
 # How often a kicked bomb advances one tile while it's rolling.
 BOMB_ROLL_STEP_MS = 120
 
+# Bomb "about to explode" blink, read by Bomb.blink_phase() below: no
+# blink for the first half of the fuse, a slow blink for the next
+# quarter, a fast blink for the final quarter. Presentation-only (0 =
+# normal, 1 = "flash"), but kept here rather than in render.py because
+# it's pure elapsed-time math with no lv/mpos dependency, and render.py
+# imports lvgl at module level -- unlike this file, nothing in it can be
+# unit-tested under plain CPython at all, even functions that don't
+# themselves touch lv.
+BOMB_BLINK_WARN_REMAINING_MS = BOMB_FUSE_MS // 2
+BOMB_BLINK_CRITICAL_REMAINING_MS = BOMB_FUSE_MS // 4
+BOMB_BLINK_WARN_PERIOD_MS = 300
+BOMB_BLINK_CRITICAL_PERIOD_MS = 120
+
+# Minimum time between a player's moves at Player.speed == 1 (the default,
+# before any SPEED_UP powerup); higher speed divides this down, same as
+# BOMB_ROLL_STEP_MS gates how often a rolling bomb advances. Not verified
+# against real input timing -- keyboard repeat rate and the DJ Add-on's
+# REFRESH_MS poll cadence are both unknowns from here, so this may need
+# on-device tuning (see scripts/dev-setup.md's "things worth checking on
+# first run", which already flags the same category of issue for the
+# arena-shrink cadence).
+MOVE_COOLDOWN_MS = 150
+
 # The arena starts closing in with walls, spiraling inward from the
 # border, this long after a game starts.
 ARENA_SHRINK_START_MS = 120000
@@ -115,6 +138,22 @@ class Bomb:
     def is_breakable(self):
         return False
 
+    def blink_phase(self, now):
+        """0 = normal, 1 = "flash" -- a presentation hint for how close
+        this bomb is to exploding. `now` should come from whichever
+        Game.now() this bomb belongs to (real time, or the synchronized
+        network frame clock in remote mode)."""
+        elapsed = now - self.placed_at
+        remaining = BOMB_FUSE_MS - elapsed
+        if remaining > BOMB_BLINK_WARN_REMAINING_MS:
+            return 0
+        period = (
+            BOMB_BLINK_CRITICAL_PERIOD_MS
+            if remaining <= BOMB_BLINK_CRITICAL_REMAINING_MS
+            else BOMB_BLINK_WARN_PERIOD_MS
+        )
+        return int(elapsed // period) % 2
+
 
 class PowerUp:
     def __init__(self, kind):
@@ -168,6 +207,11 @@ class Player:
         self.can_kick = False
         self.on_fire = False
         self.standing_on = None
+        # None, not 0, marks "never moved yet" -- 0 is a legitimate real
+        # timestamp too (an injected test clock starts there, same as
+        # DeterministicClockTests below), so it can't double as the sentinel
+        # without incorrectly blocking a player's very first move.
+        self.last_move_at = None
 
     def is_walkable(self):
         return True
@@ -197,6 +241,9 @@ class Player:
     def add_speed(self):
         self.speed = min(self.MAX_SPEED, self.speed + 1)
 
+    def move_cooldown_ms(self):
+        return MOVE_COOLDOWN_MS // self.speed
+
 
 class Game:
     def __init__(self, level, seed=None, clock=None):
@@ -208,6 +255,11 @@ class Game:
         self.portals = level.portals
         self.bombs = []
         self._burning = []  # list of dicts: {"x","y","expire_at"}
+        # Kept in lockstep with _burning's "tile" entries so is_burning() --
+        # called once per board tile on every render pass, i.e. up to a few
+        # hundred times a second during gameplay -- is an O(1) set lookup
+        # instead of an O(len(_burning)) scan of the whole list per tile.
+        self._burning_tile_positions = set()
         self.game_over = False
         self.winner = None
         self._clock = clock or _now_ms
@@ -224,14 +276,19 @@ class Game:
             return self.grid[x][y]
         return None
 
+    def now(self):
+        """The game's own clock (real time, or the synchronized network
+        frame clock in remote mode -- see Bomberboy._begin_game()). For
+        presentation code that needs "how long has this bomb been ticking"
+        without duplicating whichever clock this particular Game was built
+        with."""
+        return self._clock()
+
     def is_burning(self, x, y):
-        for entry in self._burning:
-            if entry["kind"] == "tile" and entry["x"] == x and entry["y"] == y:
-                return True
-        return False
+        return (x, y) in self._burning_tile_positions
 
     def burning_tile_positions(self):
-        return {(entry["x"], entry["y"]) for entry in self._burning if entry["kind"] == "tile"}
+        return set(self._burning_tile_positions)
 
     def set_tile(self, x, y, tile):
         self.grid[x][y] = tile
@@ -250,12 +307,44 @@ class Game:
     def move_player(self, player, direction):
         if player.is_dead or player.on_fire or self.game_over:
             return False
+        now = self._clock()
+        if player.last_move_at is not None and _elapsed_ms(player.last_move_at, now) < player.move_cooldown_ms():
+            return False
+        player.last_move_at = now
         player.facing = direction
         dx, dy = DELTA[direction]
         tx, ty = player.x + dx, player.y + dy
         target = self.tile_at(tx, ty)
         if target is None:
             return False
+
+        # A player standing on their own just-placed bomb still has the
+        # grid cell at their own (x, y) showing that Bomb, not them --
+        # place_bomb() overwrites it and only player.standing_on tracks
+        # that they're still there (see place_bomb()/_enter_tile()). So
+        # player_at() has to be checked before the Bomb branch below, or
+        # bumping into an occupied bomb tile with kick/shift gets treated
+        # as an ordinary abandoned-bomb kick/shift instead of a player
+        # encounter -- which would roll the bomb out from under its owner
+        # without moving them.
+        occupant = self.player_at(tx, ty, exclude=player)
+        if occupant is not None:
+            if isinstance(target, Bomb) or isinstance(player.standing_on, Bomb):
+                # Neither a kick/shift (rolls the bomb out from under its
+                # owner) nor a normal swap is sound here: _swap_players()
+                # would overwrite whichever grid cell holds the Bomb with
+                # a swapped-in player, losing the Bomb object the grid
+                # needs there for fuse/blast-chain detection (_ignite()
+                # and _explode() both look the bomb up via tile_at(), not
+                # just via game.bombs). Checking only target (occupant's
+                # tile) missed the symmetric case: player -- the one
+                # initiating the move -- can just as easily be the one
+                # standing on a live bomb, and _swap_players() would
+                # overwrite *that* cell instead. Simplest correct
+                # behavior either way: you can't swap if either side of
+                # the swap is standing on a live bomb.
+                return False
+            return self._swap_players(player, occupant)
 
         if isinstance(target, Bomb):
             # Kick (classic Bomberman): the bomb rolls away on its own,
@@ -273,10 +362,6 @@ class Game:
                     return True
             return False
 
-        occupant = self.player_at(tx, ty, exclude=player)
-        if occupant is not None:
-            return self._swap_players(player, occupant)
-
         if not target.is_walkable():
             return False
 
@@ -292,7 +377,18 @@ class Game:
         return True
 
     def _enter_tile(self, player, x, y, tile_left_behind):
-        self.set_tile(player.x, player.y, player.standing_on or Floor())
+        vacated = player.standing_on or Floor()
+        if isinstance(vacated, Portal):
+            # _use_portal() clears the *source* portal's occupied flag as
+            # part of an actual teleport, but that's the only place that
+            # ever did -- simply walking off a portal (to plain floor, a
+            # crate-revealed powerup, shifting a bomb, etc.) went through
+            # here instead and never cleared it, so a portal stayed
+            # permanently "occupied" and un-teleportable-into for the rest
+            # of the match after its first use, even once nobody was
+            # actually standing on it anymore.
+            vacated.occupied = False
+        self.set_tile(player.x, player.y, vacated)
         player.standing_on = tile_left_behind
         player.x, player.y = x, y
         self.set_tile(x, y, player)
@@ -314,7 +410,20 @@ class Game:
         on success, or None if blocked."""
         nx, ny = bomb.x + dx, bomb.y + dy
         beyond = self.tile_at(nx, ny)
-        if beyond is None or not beyond.is_walkable() or isinstance(beyond, Player):
+        if beyond is None or not beyond.is_walkable() or isinstance(beyond, (Player, Portal)):
+            # Portal is otherwise walkable (Portal.is_walkable() is just
+            # "not occupied"), but nothing here teleports a bomb the way
+            # _use_portal() teleports a player -- a kicked/shifted bomb
+            # would just park on top of the portal, with bomb.under
+            # becoming the Portal object and the grid showing the Bomb
+            # instead of it, while portal.occupied stays False the whole
+            # time (only _use_portal()/_enter_tile() ever touch that flag).
+            # A player could then still "successfully" teleport into that
+            # same tile and overwrite the bomb in the grid entirely --
+            # it'd still explode on schedule via game.bombs, but wouldn't
+            # damage whoever's now standing there, since _ignite() looks
+            # the tile up via tile_at(), not game.bombs. Simplest correct
+            # behavior: bombs don't roll onto portals, same as walls.
             return None
         restored = bomb.under
         self.set_tile(bomb.x, bomb.y, restored)
@@ -521,10 +630,10 @@ class Game:
         self._burning.append({"kind": "player", "player": player, "started_at": self._clock()})
 
     def _mark_burning(self, x, y):
-        for entry in self._burning:
-            if entry.get("kind") == "tile" and entry["x"] == x and entry["y"] == y:
-                return
+        if (x, y) in self._burning_tile_positions:
+            return
         self._burning.append({"kind": "tile", "x": x, "y": y, "started_at": self._clock()})
+        self._burning_tile_positions.add((x, y))
 
     def _resolve_burning(self, now):
         remaining = []
@@ -536,6 +645,7 @@ class Game:
                 self._extinguish_player(entry["player"])
             else:
                 self._extinguish_tile(entry["x"], entry["y"])
+                self._burning_tile_positions.discard((entry["x"], entry["y"]))
         self._burning = remaining
 
     def _extinguish_tile(self, x, y):

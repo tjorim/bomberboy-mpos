@@ -49,6 +49,31 @@ _PLAYER_ART = {
 _PORTAL_ART = {0: og.PORTAAL_1, 1: og.PORTAAL_2}
 
 
+def _memoize(fn):
+    """Cache a sprite function's pixel grid by its call arguments.
+
+    Every sprite function here is pure -- same arguments always produce the
+    same TILE_SIZE x TILE_SIZE grid -- but without this, render.py's
+    per-frame, per-tile calls were rebuilding that grid pixel-by-pixel from
+    scratch every time (including the whole board on first render), which is
+    the main source of slow level loads and mid-game stutter during
+    multi-tile redraws (chain explosions, gunpowder ignition). Callers only
+    ever read the returned grid, never mutate it, so sharing the cached
+    object across calls is safe.
+    """
+    cache = {}
+
+    def wrapper(*args, **kwargs):
+        key = (args, tuple(sorted(kwargs.items()))) if kwargs else args
+        cached = cache.get(key)
+        if cached is None:
+            cached = fn(*args, **kwargs)
+            cache[key] = cached
+        return cached
+
+    return wrapper
+
+
 def _grid(bg):
     return [[bg for _x in range(TILE_SIZE)] for _y in range(TILE_SIZE)]
 
@@ -78,6 +103,7 @@ def _upscale(art, bg=FLOOR_BG):
     return grid
 
 
+@_memoize
 def floor_sprite():
     g = _grid(FLOOR_BG)
     for x in range(TILE_SIZE):
@@ -86,6 +112,7 @@ def floor_sprite():
     return g
 
 
+@_memoize
 def explosion_sprite():
     g = _grid(FIRE_A)
     _circle(g, 10, 10, 9, FIRE_B)
@@ -93,22 +120,53 @@ def explosion_sprite():
     return g
 
 
+@_memoize
 def wall_sprite():
     return _upscale(og.MUUR)
 
 
+@_memoize
 def crate_sprite():
     return _upscale(og.KRAT)
 
 
+@_memoize
 def gunpowder_sprite():
     return _upscale(og.KRUIT, bg=FLOOR_BG)
 
 
+@_memoize
 def bomb_sprite():
     return _upscale(og.BOM, bg=FLOOR_BG)
 
 
+def _tint(grid, color, strength):
+    """Blend every pixel in `grid` toward `color` by `strength` (0-1)."""
+    cr, cg, cb = (color >> 16) & 0xFF, (color >> 8) & 0xFF, color & 0xFF
+    tinted = []
+    for row in grid:
+        new_row = []
+        for px in row:
+            r, g, b = (px >> 16) & 0xFF, (px >> 8) & 0xFF, px & 0xFF
+            r += int((cr - r) * strength)
+            g += int((cg - g) * strength)
+            b += int((cb - b) * strength)
+            new_row.append((r << 16) | (g << 8) | b)
+        tinted.append(new_row)
+    return tinted
+
+
+@_memoize
+def bomb_flash_sprite():
+    # No dedicated "about to explode" art exists in the decoded GBA set
+    # (og.BOM is the only bomb sprite), so this reuses the real bomb's
+    # silhouette, just brightened -- render.py blinks between this and
+    # bomb_sprite() as a bomb's fuse runs down, same idea as the original
+    # explosion_sprite() being procedural rather than hand-drawn.
+    return _tint(bomb_sprite(), 0xFFFFFF, 0.6)
+
+
+@_memoize
 def portal_sprite(pair_index=0):
     # Color identifies which linked PAIR a portal belongs to, not which
     # end of that pair it is -- both ends of one pair look identical, a
@@ -118,10 +176,12 @@ def portal_sprite(pair_index=0):
     return _upscale(_PORTAL_ART.get(pair_index % 2, og.PORTAAL_1), bg=FLOOR_BG)
 
 
+@_memoize
 def powerup_sprite(kind):
     return _upscale(_POWERUP_ART.get(kind, og.ITEM_BOMB), bg=FLOOR_BG)
 
 
+@_memoize
 def player_sprite(player_id, facing="down", dead=False):
     key = (player_id, "dead") if dead else (player_id, facing)
     return _upscale(_PLAYER_ART.get(key, og.BLAUW_ONDER), bg=FLOOR_BG)

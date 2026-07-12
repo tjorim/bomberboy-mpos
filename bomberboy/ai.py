@@ -8,22 +8,58 @@ the grid -- at most WIDTH*HEIGHT (165) cells, cheap even on an ESP32-S3, so
 no need for a fancier algorithm.
 """
 
-from model import Bomb, Crate, DELTA, Player
+from model import Bomb, Crate, DELTA, Gunpowder, Player
+
+# DELTA.values()/.items() were being re-evaluated on every call inside
+# BFS's per-node neighbor expansion and a few other per-cell checks below
+# -- each call builds a fresh dict-view object. Precomputed once here
+# instead (docs.micropython.org/en/latest/reference/speed_python.html:
+# cache frequently accessed values rather than repeated lookups), since
+# DELTA itself never changes after model.py defines it.
+_DELTA_VALUES = tuple(DELTA.values())
+_DELTA_ITEMS = tuple(DELTA.items())
+
+
+def _gunpowder_network(game):
+    # x, y are always in bounds by construction here, so grid[x][y]
+    # directly avoids tile_at()'s bounds check and method-call overhead
+    # for what's otherwise a 165-cell scan -- this runs on every bomb
+    # blast_cells()/_hypothetical_blast() computes, up to a few times per
+    # 350ms AI think-tick.
+    return {
+        (x, y)
+        for x in range(game.width)
+        for y in range(game.height)
+        if isinstance(game.grid[x][y], Gunpowder)
+    }
 
 
 def blast_cells(game, bomb):
-    """Cells a bomb's explosion would reach if it went off right now."""
+    """Cells a bomb's explosion would reach if it went off right now.
+
+    Reaching any Gunpowder tile ignites the *entire* connected network in
+    one instant (Game._ignite_gunpowder_network), not just the tiles within
+    normal flame range -- without this, danger/escape checks below would
+    treat far-away gunpowder tiles as safe even though a blast anywhere in
+    the network would ignite them too.
+    """
+    tile_at = game.tile_at
     cells = {(bomb.x, bomb.y)}
-    for dx, dy in DELTA.values():
+    ignites_gunpowder = isinstance(bomb.under, Gunpowder)
+    for dx, dy in _DELTA_VALUES:
         x, y = bomb.x, bomb.y
         for _ in range(bomb.owner.flame_range):
             x, y = x + dx, y + dy
-            tile = game.tile_at(x, y)
+            tile = tile_at(x, y)
             if tile is None or tile.stops_flame():
                 break
             cells.add((x, y))
+            if isinstance(tile, Gunpowder):
+                ignites_gunpowder = True
             if tile.is_breakable():
                 break
+    if ignites_gunpowder:
+        cells |= _gunpowder_network(game)
     return cells
 
 
@@ -35,18 +71,24 @@ def danger_cells(game):
     return danger
 
 
-def _hypothetical_blast(game, x, y, flame_range):
+def _hypothetical_blast(game, x, y, flame_range, under=None):
+    tile_at = game.tile_at
     cells = {(x, y)}
-    for dx, dy in DELTA.values():
+    ignites_gunpowder = isinstance(under, Gunpowder)
+    for dx, dy in _DELTA_VALUES:
         cx, cy = x, y
         for _ in range(flame_range):
             cx, cy = cx + dx, cy + dy
-            tile = game.tile_at(cx, cy)
+            tile = tile_at(cx, cy)
             if tile is None or tile.stops_flame():
                 break
             cells.add((cx, cy))
+            if isinstance(tile, Gunpowder):
+                ignites_gunpowder = True
             if tile.is_breakable():
                 break
+    if ignites_gunpowder:
+        cells |= _gunpowder_network(game)
     return cells
 
 
@@ -61,17 +103,25 @@ def _bfs_nearest(game, start, is_goal, avoid):
     exists."""
     if is_goal(start):
         return []
+    tile_at = game.tile_at
     visited = {start}
     queue = [start]
+    # queue.pop(0) is O(len(queue)) -- it shifts every remaining element --
+    # so a full BFS was O(cells^2) instead of O(cells). An index-based read
+    # pointer keeps FIFO order (same traversal, same result) in O(1) per
+    # dequeue without adding a collections.deque dependency this can't
+    # verify against MicroPython's implementation.
+    head = 0
     came_from = {}
-    while queue:
-        current = queue.pop(0)
+    while head < len(queue):
+        current = queue[head]
+        head += 1
         cx, cy = current
-        for dx, dy in DELTA.values():
+        for dx, dy in _DELTA_VALUES:
             nxt = (cx + dx, cy + dy)
             if nxt in visited or nxt in avoid:
                 continue
-            tile = game.tile_at(*nxt)
+            tile = tile_at(*nxt)
             if not _is_walkable(tile):
                 continue
             visited.add(nxt)
@@ -89,9 +139,12 @@ def _bfs_nearest(game, start, is_goal, avoid):
 
 
 def _adjacent_to_crate(game, pos):
+    # Called as _bfs_nearest()'s goal predicate when pathing to a crate --
+    # once per newly-visited node, so up to ~165 times per BFS call.
     x, y = pos
-    for dx, dy in DELTA.values():
-        tile = game.tile_at(x + dx, y + dy)
+    tile_at = game.tile_at
+    for dx, dy in _DELTA_VALUES:
+        tile = tile_at(x + dx, y + dy)
         if isinstance(tile, Crate):
             return True
     return False
@@ -128,7 +181,7 @@ def _has_escape_after_bombing(game, bot, danger):
     # actual safety -- it only needs to not be on one of them by the time
     # it explodes. Only pre-existing danger (from other live bombs/fire)
     # is treated as impassable during the search.
-    blast = _hypothetical_blast(game, bot.x, bot.y, bot.flame_range)
+    blast = _hypothetical_blast(game, bot.x, bot.y, bot.flame_range, under=bot.standing_on)
     combined = danger | blast
     escape = _bfs_nearest(game, (bot.x, bot.y), lambda pos: pos not in combined, avoid=danger)
     return bool(escape)
@@ -136,7 +189,7 @@ def _has_escape_after_bombing(game, bot, danger):
 
 def _direction_towards(bot, target):
     tx, ty = target
-    for direction, (dx, dy) in DELTA.items():
+    for direction, (dx, dy) in _DELTA_ITEMS:
         if bot.x + dx == tx and bot.y + dy == ty:
             return direction
     return None

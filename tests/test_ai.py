@@ -8,7 +8,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "bomberboy"))
 import model
 from ai import choose_action, danger_cells
 from levels import OpenArenaLevel
-from model import Crate, Floor, Game
+from model import Crate, Floor, Game, Gunpowder
 
 
 
@@ -77,6 +77,39 @@ class AttackTests(unittest.TestCase):
         bot.flame_range = 1
         action = choose_action(game, bot, opponent)
         self.assertEqual(action, ("bomb",))
+
+
+class GunpowderNetworkDangerTests(unittest.TestCase):
+    def setUp(self):
+        fast_timers()
+
+    def tearDown(self):
+        slow_timers()
+
+    def test_danger_cells_include_the_whole_gunpowder_network_not_just_local_blast(self):
+        # Game._ignite_gunpowder_network ignites every Gunpowder tile on the
+        # board the instant a blast reaches any one of them -- not just the
+        # tiles within normal flame range. The AI's danger model has to
+        # account for that or it can consider a far-away gunpowder tile
+        # "safe" right up until it also catches fire.
+        game = Game(OpenArenaLevel())
+        bot, opponent = game.players
+        game.set_tile(bot.x, bot.y, Floor())
+        game.set_tile(opponent.x, opponent.y, Floor())
+        opponent.x, opponent.y = 5, 5
+        game.set_tile(opponent.x, opponent.y, opponent)
+        bot.x, bot.y = 9, 5
+        game.set_tile(bot.x, bot.y, bot)
+
+        near = (opponent.x + 1, opponent.y)
+        game.set_tile(*near, Gunpowder())
+        far = (2, 9)
+        game.set_tile(*far, Gunpowder())
+
+        opponent.flame_range = 1
+        game.place_bomb(opponent)
+
+        self.assertIn(far, danger_cells(game))
 
 
 class CrateBreakingTests(unittest.TestCase):

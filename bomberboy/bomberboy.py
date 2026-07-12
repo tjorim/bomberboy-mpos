@@ -46,6 +46,11 @@ _P2_KEYS = {
 }
 _P2_BOMB_KEY = ord("f")
 
+# Shared with _on_dj_tick(): in remote mode, every local input source queues
+# a network action instead of touching self.game directly, so both peers
+# apply it on the same synchronized frame.
+_DIRECTION_TO_NETWORK_ACTION = {UP: "U", DOWN: "D", LEFT: "L", RIGHT: "R"}
+
 _APP_DIR = "/".join(__file__.replace("\\", "/").split("/")[:-1])
 
 
@@ -73,6 +78,13 @@ class Bomberboy(Activity):
         self.network_pairing = False
         self.network_time = 0
         self.network_silence = 0
+        # Tracks whether the currently-shown screen is the main menu, so
+        # onBackPressed() can always route back to it from any other screen
+        # this Activity owns (pairing search, pairing error, in-game, result)
+        # without having to infer "am I on the menu" from a combination of
+        # other state -- that inference previously missed the case where
+        # ESP-NOW fails to open during pairing (see _start_pairing()).
+        self._on_menu = True
         self._show_menu()
 
     def _start_game_timers(self):
@@ -93,8 +105,13 @@ class Bomberboy(Activity):
     def _show_menu(self):
         # Reaching the menu -- whether at startup, after backing out of a
         # match, or via the result screen's "Menu" button -- always means no
-        # game should be ticking anymore.
+        # game should be ticking anymore, and no leftover curtain-wipe timer
+        # should be able to fire against the screen this is about to
+        # replace (its 30ms timer runs for ~300ms after a level starts, so
+        # backing out fast enough used to leave it running past teardown).
         self._stop_game_timers()
+        self._clear_curtain()
+        self._on_menu = True
         screen = lv.obj()
         title = lv.label(screen)
         titles = {"bot": "Bomberboy - vs Bot", "local": "Bomberboy - Local", "remote": "Bomberboy - Remote"}
@@ -115,6 +132,15 @@ class Bomberboy(Activity):
         lv.label(remote_btn).set_text("Remote")
         remote_btn.align(lv.ALIGN.TOP_MID, 92, 32)
         remote_btn.add_event_cb(lambda e: self._set_mode("remote"), lv.EVENT.CLICKED, None)
+
+        # Mode buttons otherwise gave no feedback for which mode is active
+        # beyond the title text up top -- mark the current one CHECKED so it
+        # reads as visibly pressed/selected, matching the theme's built-in
+        # checked-button style.
+        mode_buttons = {"bot": bot_btn, "local": two_p_btn, "remote": remote_btn}
+        for button in mode_buttons.values():
+            button.add_flag(lv.obj.FLAG.CHECKABLE)
+        mode_buttons[self.mode].add_state(lv.STATE.CHECKED)
 
         level_list = lv.list(screen)
         level_list.set_size(lv.pct(90), lv.pct(60))
@@ -144,6 +170,7 @@ class Bomberboy(Activity):
         # without going through _show_menu() first), so always stop-then-
         # start rather than assuming a clean slate.
         self._stop_game_timers()
+        self._on_menu = False
         self.result_shown = False
         if self.mode == "remote":
             self.network_time = 0
@@ -189,6 +216,7 @@ class Bomberboy(Activity):
 
     def _start_pairing(self):
         self._close_network()
+        self._on_menu = False
         screen = lv.obj()
         label = lv.label(screen)
         label.set_text("Looking for another badge...")
@@ -353,19 +381,21 @@ class Bomberboy(Activity):
         self._close_network()
 
     def onBackPressed(self, screen):
-        # Handles both mid-game (abandon the match) and the post-game-over
-        # result screen (go pick something else) the same way.
-        if self.network_pairing:
-            self._close_network()
-            self._show_menu()
-            return True
-        if self.game is not None:
-            self.game = None
-            self._close_network()
-            led_indicator.clear()
-            self._show_menu()
-            return True
-        return super().onBackPressed(screen)
+        # Any screen this Activity shows other than the main menu -- pairing
+        # search, pairing failure, mid-game, or the post-game-over result
+        # screen -- backs out to the menu the same way. Only the menu itself
+        # falls through to the default (exit/background) behavior. This used
+        # to be inferred from network_pairing/game state instead of tracked
+        # explicitly, which missed the case where ESP-NOW fails to even open
+        # during pairing: network_pairing was never set True and game was
+        # never set, so back silently did nothing useful on that screen.
+        if self._on_menu:
+            return super().onBackPressed(screen)
+        self.game = None
+        self._close_network()
+        led_indicator.clear()
+        self._show_menu()
+        return True
 
     def _on_key(self, event):
         if self.game is None or self.game.game_over:
@@ -419,17 +449,48 @@ class Bomberboy(Activity):
         if self.dj_input is None or self.game is None or self.game.game_over:
             return
         for player_index, kind, direction in self.dj_input.read_actions():
-            self._apply_player_action(player_index, kind, direction)
+            if self.mode == "remote":
+                # Every _PAD_ACTIONS entry already hardcodes player_index 0
+                # (the DJ Add-on is single-player big-button control, no P2
+                # mapping exists -- see dj_addon.py), so this is currently
+                # unreachable, not a live bug. Guarding it anyway, matching
+                # _on_key()'s remote branch (which only ever reads P1 keys):
+                # if the DJ mapping ever grows a second player, this stops
+                # it from silently routing their input into the *local*
+                # player's single synchronized network queue.
+                if player_index != 0:
+                    continue
+                # Route through the same synchronized-frame protocol as
+                # keyboard input in _on_key() -- calling
+                # _apply_player_action() here would mutate self.game
+                # immediately and desync the two peers' simulations, since
+                # remote mode is only supposed to advance via
+                # _network_game_loop() applying actions both sides agreed on.
+                action = "B" if kind == "bomb" else _DIRECTION_TO_NETWORK_ACTION.get(direction)
+                if action is not None:
+                    self.network_sync.queue(action)
+            else:
+                self._apply_player_action(player_index, kind, direction)
 
     def _on_tick(self, timer):
         if self.game is None or self.mode == "remote":
             return
         bombs_before = len(self.game.bombs)
         lives_before = {p.player_id: p.lives for p in self.game.players}
+        on_fire_before = {p.player_id: p.on_fire for p in self.game.players}
         self.game.tick()
         if len(self.game.bombs) < bombs_before:
             self._play("BombeExplode.wav")
         for player in self.game.players:
+            # Warning.wav previously only played once the ~1-second burn
+            # resolved and a life was actually lost (model.BOMB_BURN_MS) --
+            # a delayed damage notification, not a warning. Play it the
+            # instant a player catches fire too, while they still have a
+            # moment to react (though move_player()/place_bomb() both
+            # already block input while on_fire, so "react" here mostly
+            # means "notice why the badge stopped responding").
+            if player.on_fire and not on_fire_before[player.player_id]:
+                self._play("Warning.wav")
             if player.lives < lives_before[player.player_id]:
                 self._play("Die.wav" if player.is_dead else "Warning.wav")
         self._refresh()
@@ -463,9 +524,21 @@ class Bomberboy(Activity):
             p1_label = "P1" if self.two_player else "You"
             p2_label = "P2" if self.two_player else "Bot"
         self.hud.set_text(
-            "%s: %d lives, %d bombs, flame %d   %s: %d lives, %d bombs, flame %d"
-            % (p1_label, p1.lives, p1.bombs_available, p1.flame_range, p2_label, p2.lives, p2.bombs_available, p2.flame_range)
+            "%s: %d lives, %d bombs, flame %d%s   %s: %d lives, %d bombs, flame %d%s"
+            % (
+                p1_label, p1.lives, p1.bombs_available, p1.flame_range, self._speed_suffix(p1),
+                p2_label, p2.lives, p2.bombs_available, p2.flame_range, self._speed_suffix(p2),
+            )
         )
+
+    @staticmethod
+    def _speed_suffix(player):
+        # Speed is the only stat with no baseline value worth always
+        # showing (bombs/flame start meaningfully at 1 already) -- SPEED_UP
+        # used to have no visible effect at all (see model.MOVE_COOLDOWN_MS),
+        # so this only shows up once it actually matters, keeping the HUD
+        # text unchanged for the common case where nobody's picked it up.
+        return ", spd %d" % player.speed if player.speed > 1 else ""
 
     def _show_result(self):
         # The tick timer keeps running until the whole Activity pauses, not
@@ -494,7 +567,13 @@ class Bomberboy(Activity):
         self.result_label.remove_flag(lv.obj.FLAG.HIDDEN)
 
         restart_btn = lv.button(self.game_screen)
-        lv.label(restart_btn).set_text("Play Again")
+        # In remote mode, _start_level() below re-triggers _start_pairing()
+        # -- a fresh ESP-NOW discovery, not an instant rematch, and it only
+        # succeeds if the peer badge also backs out to pairing around the
+        # same time. "Play Again" reads as "instantly restart," which isn't
+        # what happens here, so label it to set the right expectation.
+        restart_btn_label = "Rematch" if self.mode == "remote" else "Play Again"
+        lv.label(restart_btn).set_text(restart_btn_label)
         restart_btn.align(lv.ALIGN.CENTER, 0, 30)
         restart_btn.add_event_cb(lambda e: self._start_level(self.level_index), lv.EVENT.CLICKED, None)
 
