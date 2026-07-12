@@ -61,7 +61,7 @@ jobs:
 
       - name: Publish to BadgeHub
         if: startsWith(github.ref, 'refs/tags/v') && env.BADGEHUB_API_TOKEN != ''
-        uses: tjorim/mpos-badgehub-publish@v1
+        uses: tjorim/mpos-badgehub-publish@v1.0.3
         with:
           slug: bomberboy
           api-token: ${{ secrets.BADGEHUB_API_TOKEN }}
