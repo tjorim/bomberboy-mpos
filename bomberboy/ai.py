@@ -10,6 +10,15 @@ no need for a fancier algorithm.
 
 from model import Bomb, Crate, DELTA, Gunpowder, Player
 
+# DELTA.values()/.items() were being re-evaluated on every call inside
+# BFS's per-node neighbor expansion and a few other per-cell checks below
+# -- each call builds a fresh dict-view object. Precomputed once here
+# instead (docs.micropython.org/en/latest/reference/speed_python.html:
+# cache frequently accessed values rather than repeated lookups), since
+# DELTA itself never changes after model.py defines it.
+_DELTA_VALUES = tuple(DELTA.values())
+_DELTA_ITEMS = tuple(DELTA.items())
+
 
 def _gunpowder_network(game):
     # x, y are always in bounds by construction here, so grid[x][y]
@@ -34,13 +43,14 @@ def blast_cells(game, bomb):
     treat far-away gunpowder tiles as safe even though a blast anywhere in
     the network would ignite them too.
     """
+    tile_at = game.tile_at
     cells = {(bomb.x, bomb.y)}
     ignites_gunpowder = isinstance(bomb.under, Gunpowder)
-    for dx, dy in DELTA.values():
+    for dx, dy in _DELTA_VALUES:
         x, y = bomb.x, bomb.y
         for _ in range(bomb.owner.flame_range):
             x, y = x + dx, y + dy
-            tile = game.tile_at(x, y)
+            tile = tile_at(x, y)
             if tile is None or tile.stops_flame():
                 break
             cells.add((x, y))
@@ -62,13 +72,14 @@ def danger_cells(game):
 
 
 def _hypothetical_blast(game, x, y, flame_range, under=None):
+    tile_at = game.tile_at
     cells = {(x, y)}
     ignites_gunpowder = isinstance(under, Gunpowder)
-    for dx, dy in DELTA.values():
+    for dx, dy in _DELTA_VALUES:
         cx, cy = x, y
         for _ in range(flame_range):
             cx, cy = cx + dx, cy + dy
-            tile = game.tile_at(cx, cy)
+            tile = tile_at(cx, cy)
             if tile is None or tile.stops_flame():
                 break
             cells.add((cx, cy))
@@ -92,6 +103,7 @@ def _bfs_nearest(game, start, is_goal, avoid):
     exists."""
     if is_goal(start):
         return []
+    tile_at = game.tile_at
     visited = {start}
     queue = [start]
     # queue.pop(0) is O(len(queue)) -- it shifts every remaining element --
@@ -105,11 +117,11 @@ def _bfs_nearest(game, start, is_goal, avoid):
         current = queue[head]
         head += 1
         cx, cy = current
-        for dx, dy in DELTA.values():
+        for dx, dy in _DELTA_VALUES:
             nxt = (cx + dx, cy + dy)
             if nxt in visited or nxt in avoid:
                 continue
-            tile = game.tile_at(*nxt)
+            tile = tile_at(*nxt)
             if not _is_walkable(tile):
                 continue
             visited.add(nxt)
@@ -127,9 +139,12 @@ def _bfs_nearest(game, start, is_goal, avoid):
 
 
 def _adjacent_to_crate(game, pos):
+    # Called as _bfs_nearest()'s goal predicate when pathing to a crate --
+    # once per newly-visited node, so up to ~165 times per BFS call.
     x, y = pos
-    for dx, dy in DELTA.values():
-        tile = game.tile_at(x + dx, y + dy)
+    tile_at = game.tile_at
+    for dx, dy in _DELTA_VALUES:
+        tile = tile_at(x + dx, y + dy)
         if isinstance(tile, Crate):
             return True
     return False
@@ -174,7 +189,7 @@ def _has_escape_after_bombing(game, bot, danger):
 
 def _direction_towards(bot, target):
     tx, ty = target
-    for direction, (dx, dy) in DELTA.items():
+    for direction, (dx, dy) in _DELTA_ITEMS:
         if bot.x + dx == tx and bot.y + dy == ty:
             return direction
     return None
