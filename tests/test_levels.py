@@ -5,7 +5,32 @@ import unittest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "bomberboy"))
 
 from levels import LEVELS, GunpowderCrossLevel, MazeLevel, OpenArenaLevel, PortalMazeLevel
-from model import Floor, Gunpowder, Player, Portal, Wall
+from model import Floor, Game, Gunpowder, Player, Portal, PowerUp, Wall
+
+
+def grid_signature(grid, width, height):
+    signature = []
+    for y in range(height):
+        row = []
+        for x in range(width):
+            tile = grid[x][y]
+            if isinstance(tile, PowerUp):
+                row.append((type(tile).__name__, tile.kind))
+            elif isinstance(tile, Portal):
+                row.append((type(tile).__name__, tile.portal_id))
+            else:
+                row.append(type(tile).__name__)
+        signature.append(tuple(row))
+    return tuple(signature)
+
+
+def powerup_signature(grid, width, height):
+    return tuple(
+        (x, y, grid[x][y].kind)
+        for y in range(height)
+        for x in range(width)
+        if isinstance(grid[x][y], PowerUp)
+    )
 
 
 class LevelInvariantTests(unittest.TestCase):
@@ -26,6 +51,85 @@ class LevelInvariantTests(unittest.TestCase):
             w, h = level.width, level.height
             for x, y in ((w - 2, h - 2), (w - 3, h - 2), (w - 2, h - 3)):
                 self.assertTrue(grid[x][y].is_walkable(), msg=f"{level.name} spawn pocket ({x},{y})")
+
+
+class SeededLevelTests(unittest.TestCase):
+    def test_seeded_layouts_have_stable_signatures(self):
+        expected = {
+            MazeLevel: (
+                (9, 1, 4),
+                (9, 2, 2),
+                (7, 3, 6),
+                (11, 3, 2),
+                (1, 5, 0),
+                (2, 5, 5),
+                (5, 5, 5),
+                (8, 5, 3),
+                (9, 5, 4),
+                (13, 5, 5),
+                (1, 7, 2),
+                (4, 7, 5),
+                (5, 7, 0),
+                (7, 7, 4),
+                (11, 7, 2),
+                (3, 8, 6),
+                (5, 9, 5),
+                (9, 9, 5),
+            ),
+            PortalMazeLevel: (
+                (11, 1, 5),
+                (5, 3, 4),
+                (9, 3, 6),
+                (13, 3, 0),
+                (1, 5, 4),
+                (6, 5, 5),
+                (8, 5, 4),
+                (9, 6, 0),
+                (5, 7, 4),
+                (8, 7, 2),
+                (13, 7, 2),
+                (1, 8, 5),
+                (3, 8, 2),
+                (8, 9, 3),
+            ),
+        }
+        for level_cls, signature in expected.items():
+            level = level_cls()
+            grid = level.build_grid(seed=0xB0B)
+            self.assertEqual(powerup_signature(grid, level.width, level.height), signature, msg=level.name)
+
+    def test_seeded_random_levels_are_reproducible(self):
+        for level_cls in (MazeLevel, PortalMazeLevel):
+            first = level_cls()
+            second = level_cls()
+            first_grid = first.build_grid(seed=0xB0B)
+            second_grid = second.build_grid(seed=0xB0B)
+            self.assertEqual(
+                grid_signature(first_grid, first.width, first.height),
+                grid_signature(second_grid, second.width, second.height),
+                msg=level_cls.name,
+            )
+
+    def test_different_seeds_change_random_levels(self):
+        for level_cls in (MazeLevel, PortalMazeLevel):
+            first = level_cls()
+            second = level_cls()
+            first_grid = first.build_grid(seed=1)
+            second_grid = second.build_grid(seed=2)
+            self.assertNotEqual(
+                grid_signature(first_grid, first.width, first.height),
+                grid_signature(second_grid, second.width, second.height),
+                msg=level_cls.name,
+            )
+
+    def test_game_passes_seed_to_level_generation(self):
+        game_a = Game(MazeLevel(), seed=12345)
+        game_b = Game(MazeLevel(), seed=12345)
+        self.assertEqual(game_a.seed, 12345)
+        self.assertEqual(
+            grid_signature(game_a.grid, game_a.width, game_a.height),
+            grid_signature(game_b.grid, game_b.width, game_b.height),
+        )
 
 
 class MazeLevelTests(unittest.TestCase):

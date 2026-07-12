@@ -30,6 +30,15 @@ is attached — MicroPythonOS auto-detects it at boot and registers its
 keyboard as just another input source, so `bomberboy.py` doesn't need to
 know or care which keyboard the key events are actually coming from.
 
+Remote mode automatically discovers another nearby badge over ESP-NOW. The
+badge with the lower MAC address hosts the match, chooses the level seed, and
+plays as player 1. Both badges build the same level with a project-owned 32-bit
+xorshift generator, then exchange one input per 100 ms simulation frame. A
+frame advances only when both inputs are present, keeping bomb fuses, flames,
+rolling bombs, and arena shrink synchronized without broadcasting full state.
+Packets repeat the previous frame so a single lost ESP-NOW packet can be
+recovered; a silent peer ends the match after five seconds.
+
 The board is also redesigned smaller (15x11 tiles at 20px instead of the
 original's 21x15 at 40px) to fit the badge's 320x240 screen, though it's
 built from the same even-coordinate "pillar" maze algorithm as the original.

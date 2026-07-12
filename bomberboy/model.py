@@ -95,12 +95,12 @@ class Gunpowder:
 
 
 class Bomb:
-    def __init__(self, owner, x, y, under):
+    def __init__(self, owner, x, y, under, placed_at=None):
         self.owner = owner
         self.x = x
         self.y = y
         self.under = under
-        self.placed_at = _now_ms()
+        self.placed_at = _now_ms() if placed_at is None else placed_at
         self.exploded = False
         # Direction (dx, dy) while a kicked bomb is rolling, else None.
         self.rolling = None
@@ -199,17 +199,19 @@ class Player:
 
 
 class Game:
-    def __init__(self, level):
+    def __init__(self, level, seed=None, clock=None):
         self.width = level.width
         self.height = level.height
-        self.grid = level.build_grid()
+        self.seed = seed
+        self.grid = level.build_grid(seed=seed)
         self.players = level.place_players(self.grid)
         self.portals = level.portals
         self.bombs = []
         self._burning = []  # list of dicts: {"x","y","expire_at"}
         self.game_over = False
         self.winner = None
-        self._start_time = _now_ms()
+        self._clock = clock or _now_ms
+        self._start_time = self._clock()
         self._shrink_started = False
         self._shrink_last_step = 0
         self._shrink_i = 1
@@ -325,7 +327,7 @@ class Game:
         if self._move_bomb_one_tile(bomb, dx, dy) is None:
             return False
         bomb.rolling = (dx, dy)
-        bomb.last_roll_at = _now_ms()
+        bomb.last_roll_at = self._clock()
         return True
 
     def _advance_rolling_bombs(self, now):
@@ -377,7 +379,7 @@ class Game:
         under = player.standing_on
         if not isinstance(under, (Floor, Gunpowder)):
             return False
-        bomb = Bomb(player, player.x, player.y, under)
+        bomb = Bomb(player, player.x, player.y, under, self._clock())
         player.standing_on = bomb
         self.set_tile(player.x, player.y, bomb)
         player.bombs_available -= 1
@@ -387,7 +389,7 @@ class Game:
     def tick(self):
         if self.game_over:
             return
-        now = _now_ms()
+        now = self._clock()
         for bomb in list(self.bombs):
             if not bomb.exploded and _elapsed_ms(bomb.placed_at, now) >= BOMB_FUSE_MS:
                 bomb.exploded = True
@@ -516,13 +518,13 @@ class Game:
         if player.on_fire or player.is_dead:
             return
         player.on_fire = True
-        self._burning.append({"kind": "player", "player": player, "started_at": _now_ms()})
+        self._burning.append({"kind": "player", "player": player, "started_at": self._clock()})
 
     def _mark_burning(self, x, y):
         for entry in self._burning:
             if entry.get("kind") == "tile" and entry["x"] == x and entry["y"] == y:
                 return
-        self._burning.append({"kind": "tile", "x": x, "y": y, "started_at": _now_ms()})
+        self._burning.append({"kind": "tile", "x": x, "y": y, "started_at": self._clock()})
 
     def _resolve_burning(self, now):
         remaining = []

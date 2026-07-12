@@ -1,8 +1,8 @@
 {
   "name": "Bomberboy",
   "publisher": "Jorim Tielemans",
-  "short_description": "Bomberman-style game vs. a bot or a friend",
-  "long_description": "A port of a 2014 local 2-player Bomberman clone to MicroPythonOS: place bombs, break crates, grab powerups, and outlast an opponent (a bot, or a friend in 2-player mode) across four levels.",
+  "short_description": "Bomberman vs. a bot or a local/remote friend",
+  "long_description": "A Bomberman-style game for MicroPythonOS: place bombs, break crates, grab powerups, and outlast a bot or another player using one keyboard or two nearby badges linked with ESP-NOW.",
   "fullname": "bomberboy",
   "version": "0.1.0",
   "category": "game",

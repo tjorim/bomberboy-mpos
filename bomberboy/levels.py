@@ -42,11 +42,51 @@ def _fill_crates(grid, width, height):
                 grid[x][y] = Crate()
 
 
-def _sprinkle_powerups(grid, width, height, count):
+class _Rng:
+    """Small, stable PRNG that only relies on MicroPython integer operations."""
+
+    _MASK = 0xFFFFFFFF
+
+    def __init__(self, seed=None):
+        if seed is None:
+            seed = random.getrandbits(32)
+        if not isinstance(seed, int):
+            raise TypeError("level seed must be an integer")
+        self._state = (seed & self._MASK) ^ 0xA5A5A5A5
+        if self._state == 0:
+            self._state = 0x6D2B79F5
+
+    def _next(self):
+        value = self._state
+        value ^= (value << 13) & self._MASK
+        value ^= value >> 17
+        value ^= (value << 5) & self._MASK
+        self._state = value & self._MASK
+        return self._state
+
+    def _randbelow(self, upper):
+        if upper <= 0:
+            raise ValueError("upper bound must be positive")
+        limit = (1 << 32) - ((1 << 32) % upper)
+        value = self._next()
+        while value >= limit:
+            value = self._next()
+        return value % upper
+
+    def shuffle(self, values):
+        for index in range(len(values) - 1, 0, -1):
+            other = self._randbelow(index + 1)
+            values[index], values[other] = values[other], values[index]
+
+    def choice(self, values):
+        return values[self._randbelow(len(values))]
+
+
+def _sprinkle_powerups(grid, width, height, count, rng):
     candidates = [(x, y) for x in range(width) for y in range(height) if isinstance(grid[x][y], Crate)]
-    random.shuffle(candidates)
+    rng.shuffle(candidates)
     for x, y in candidates[:count]:
-        grid[x][y] = PowerUp(random.choice(ALL_POWERS))
+        grid[x][y] = PowerUp(rng.choice(ALL_POWERS))
 
 
 class Level:
@@ -59,7 +99,7 @@ class Level:
     def __init__(self):
         self.portals = []
 
-    def build_grid(self):
+    def build_grid(self, seed=None):
         raise NotImplementedError
 
     def place_players(self, grid):
@@ -85,13 +125,15 @@ class MazeLevel(Level):
     name = "Maze"
     powerup_count = 18
 
-    def build_grid(self):
+    def build_grid(self, seed=None):
+        rng = _Rng(seed)
+        self.portals = []
         grid = _base_grid(self.width, self.height)
         _fill_crates(grid, self.width, self.height)
         (p1x, p1y), (p2x, p2y) = _spawn_positions(self.width, self.height)
         _clear_spawn_pocket(grid, p1x, p1y, 1, 1)
         _clear_spawn_pocket(grid, p2x, p2y, -1, -1)
-        _sprinkle_powerups(grid, self.width, self.height, self.powerup_count)
+        _sprinkle_powerups(grid, self.width, self.height, self.powerup_count, rng)
         return grid
 
 
@@ -100,7 +142,7 @@ class GunpowderCrossLevel(Level):
 
     name = "Fire Everywhere"
 
-    def build_grid(self):
+    def build_grid(self, seed=None):
         grid = _base_grid(self.width, self.height)
         mid_x, mid_y = self.width // 2, self.height // 2
         for x in range(2, self.width - 2):
@@ -140,7 +182,9 @@ class PortalMazeLevel(Level):
         grid[b.x][b.y] = b
         self.portals.extend((a, b))
 
-    def build_grid(self):
+    def build_grid(self, seed=None):
+        rng = _Rng(seed)
+        self.portals = []
         grid = _base_grid(self.width, self.height)
         _fill_crates(grid, self.width, self.height)
         (p1x, p1y), (p2x, p2y) = _spawn_positions(self.width, self.height)
@@ -150,7 +194,7 @@ class PortalMazeLevel(Level):
         self._add_portal_pair(grid, (3, 3), (self.width - 4, self.height - 4), 0)
         self._add_portal_pair(grid, (self.width - 4, 3), (3, self.height - 4), 1)
 
-        _sprinkle_powerups(grid, self.width, self.height, self.powerup_count)
+        _sprinkle_powerups(grid, self.width, self.height, self.powerup_count, rng)
         return grid
 
 
@@ -160,7 +204,7 @@ class OpenArenaLevel(Level):
     name = "Showdown"
     give_max_stats = True
 
-    def build_grid(self):
+    def build_grid(self, seed=None):
         return _base_grid(self.width, self.height)
 
 
