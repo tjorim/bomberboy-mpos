@@ -13,6 +13,21 @@ from model import Bomb, Crate, Gunpowder, Player, PowerUp, Portal, Wall
 
 TILE_SIZE = sprites.TILE_SIZE
 
+# lv.color_hex() builds a color object on every call; sprites only ever use
+# a small, fixed palette (a few dozen distinct 0xRRGGBB values total across
+# all tiles), so caching by int avoids rebuilding the same color object for
+# every one of the (up to) TILE_SIZE*TILE_SIZE repeats of it within a single
+# sprite, and across sprites that share background/edge colors.
+_color_cache = {}
+
+
+def _color(value):
+    color = _color_cache.get(value)
+    if color is None:
+        color = lv.color_hex(value)
+        _color_cache[value] = color
+    return color
+
 
 class BoardRenderer:
     def __init__(self, parent, game):
@@ -72,10 +87,14 @@ class BoardRenderer:
 
     def _draw_tile(self, x, y, pixel_grid):
         ox, oy = x * TILE_SIZE, y * TILE_SIZE
+        canvas = self.canvas
+        set_px = canvas.set_px
+        opa_cover = lv.OPA.COVER
         for py in range(TILE_SIZE):
             row = pixel_grid[py]
+            row_y = oy + py
             for px in range(TILE_SIZE):
-                self.canvas.set_px(ox + px, oy + py, lv.color_hex(row[px]), lv.OPA.COVER)
+                set_px(ox + px, row_y, _color(row[px]), opa_cover)
 
     def render(self, force=False):
         for x in range(self.game.width):
