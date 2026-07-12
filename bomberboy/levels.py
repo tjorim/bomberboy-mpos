@@ -42,8 +42,44 @@ def _fill_crates(grid, width, height):
                 grid[x][y] = Crate()
 
 
-def _coerce_rng(seed):
-    return random if seed is None else random.Random(seed)
+class _Rng:
+    """Small, stable PRNG that only relies on MicroPython integer operations."""
+
+    _MASK = 0xFFFFFFFF
+
+    def __init__(self, seed=None):
+        if seed is None:
+            seed = random.getrandbits(32)
+        if not isinstance(seed, int):
+            raise TypeError("level seed must be an integer")
+        self._state = (seed & self._MASK) ^ 0xA5A5A5A5
+        if self._state == 0:
+            self._state = 0x6D2B79F5
+
+    def _next(self):
+        value = self._state
+        value ^= (value << 13) & self._MASK
+        value ^= value >> 17
+        value ^= (value << 5) & self._MASK
+        self._state = value & self._MASK
+        return self._state
+
+    def _randbelow(self, upper):
+        if upper <= 0:
+            raise ValueError("upper bound must be positive")
+        limit = (1 << 32) - ((1 << 32) % upper)
+        value = self._next()
+        while value >= limit:
+            value = self._next()
+        return value % upper
+
+    def shuffle(self, values):
+        for index in range(len(values) - 1, 0, -1):
+            other = self._randbelow(index + 1)
+            values[index], values[other] = values[other], values[index]
+
+    def choice(self, values):
+        return values[self._randbelow(len(values))]
 
 
 def _sprinkle_powerups(grid, width, height, count, rng):
@@ -90,7 +126,7 @@ class MazeLevel(Level):
     powerup_count = 18
 
     def build_grid(self, seed=None):
-        rng = _coerce_rng(seed)
+        rng = _Rng(seed)
         self.portals = []
         grid = _base_grid(self.width, self.height)
         _fill_crates(grid, self.width, self.height)
@@ -147,7 +183,7 @@ class PortalMazeLevel(Level):
         self.portals.extend((a, b))
 
     def build_grid(self, seed=None):
-        rng = _coerce_rng(seed)
+        rng = _Rng(seed)
         self.portals = []
         grid = _base_grid(self.width, self.height)
         _fill_crates(grid, self.width, self.height)
