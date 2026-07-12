@@ -61,11 +61,12 @@ jobs:
 
       - name: Publish to BadgeHub
         if: startsWith(github.ref, 'refs/tags/v') && env.BADGEHUB_API_TOKEN != ''
-        uses: tjorim/mpos-badgehub-publish@v1.0.4
+        uses: tjorim/mpos-badgehub-publish@v1.0.7
         with:
           slug: bomberboy
           api-token: ${{ secrets.BADGEHUB_API_TOKEN }}
           app-dir: bomberboy
+          mpk-path: ${{ steps.build.outputs.mpk-path }}
           categories: Game
         env:
           BADGEHUB_API_TOKEN: ${{ secrets.BADGEHUB_API_TOKEN }}
