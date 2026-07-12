@@ -157,6 +157,42 @@ class BombTests(unittest.TestCase):
         self.assertEqual(p2.lives, lives_before - 1)
 
 
+class BombBlinkPhaseTests(unittest.TestCase):
+    """Bomb.blink_phase() is a presentation-only hint (0 = normal, 1 =
+    "flash") consumed by render.py to blink a bomb faster as its fuse
+    runs down -- pure elapsed-time math, so it's tested here directly
+    rather than through the LVGL-facing renderer, which can't be
+    unit-tested under plain CPython at all."""
+
+    @staticmethod
+    def _bomb():
+        return model.Bomb(owner=None, x=0, y=0, under=Floor(), placed_at=0)
+
+    def test_no_blink_for_the_first_half_of_the_fuse(self):
+        bomb = self._bomb()
+        self.assertEqual(bomb.blink_phase(0), 0)
+        self.assertEqual(bomb.blink_phase(model.BOMB_FUSE_MS // 2 - 1), 0)
+
+    def test_slow_blink_starts_at_the_halfway_point(self):
+        bomb = self._bomb()
+        start = model.BOMB_FUSE_MS // 2
+        self.assertNotEqual(
+            bomb.blink_phase(start),
+            bomb.blink_phase(start + model.BOMB_BLINK_WARN_PERIOD_MS),
+        )
+
+    def test_fast_blink_starts_in_the_final_quarter(self):
+        bomb = self._bomb()
+        start = model.BOMB_FUSE_MS - model.BOMB_BLINK_CRITICAL_REMAINING_MS
+        self.assertNotEqual(
+            bomb.blink_phase(start),
+            bomb.blink_phase(start + model.BOMB_BLINK_CRITICAL_PERIOD_MS),
+        )
+
+    def test_critical_blink_is_faster_than_warning_blink(self):
+        self.assertLess(model.BOMB_BLINK_CRITICAL_PERIOD_MS, model.BOMB_BLINK_WARN_PERIOD_MS)
+
+
 class ShiftAndKickTests(unittest.TestCase):
     def setUp(self):
         fast_roll_timer()

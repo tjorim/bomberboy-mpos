@@ -33,5 +33,26 @@ class SpriteCachingTests(unittest.TestCase):
         self.assertTrue(all(len(row) == sprites.TILE_SIZE for row in grid))
 
 
+class BombFlashSpriteTests(unittest.TestCase):
+    def test_flash_sprite_is_the_same_shape_as_the_bomb_sprite(self):
+        flash = sprites.bomb_flash_sprite()
+        bomb = sprites.bomb_sprite()
+        self.assertEqual(len(flash), len(bomb))
+        self.assertTrue(all(len(row) == sprites.TILE_SIZE for row in flash))
+
+    def test_flash_sprite_is_brighter_than_the_bomb_sprite(self):
+        flash = sprites.bomb_flash_sprite()
+        bomb = sprites.bomb_sprite()
+        for flash_row, bomb_row in zip(flash, bomb):
+            for flash_px, bomb_px in zip(flash_row, bomb_row):
+                for shift in (16, 8, 0):
+                    flash_channel = (flash_px >> shift) & 0xFF
+                    bomb_channel = (bomb_px >> shift) & 0xFF
+                    self.assertGreaterEqual(flash_channel, bomb_channel)
+
+    def test_flash_sprite_is_cached(self):
+        self.assertIs(sprites.bomb_flash_sprite(), sprites.bomb_flash_sprite())
+
+
 if __name__ == "__main__":
     unittest.main()

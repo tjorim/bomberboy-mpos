@@ -56,7 +56,7 @@ class BoardRenderer:
             # working.
             return ("player", tile.player_id, tile.facing, tile.is_dead, tile.on_fire)
         if isinstance(tile, Bomb):
-            return ("bomb",)
+            return ("bomb", tile.blink_phase(self.game.now()))
         if isinstance(tile, Crate):
             return ("crate", burning)
         if isinstance(tile, Gunpowder):
@@ -80,7 +80,7 @@ class BoardRenderer:
         if kind == "gunpowder":
             return sprites.explosion_sprite() if signature[1] else sprites.gunpowder_sprite()
         if kind == "bomb":
-            return sprites.bomb_sprite()
+            return sprites.bomb_flash_sprite() if signature[1] else sprites.bomb_sprite()
         if kind == "portal":
             return sprites.portal_sprite(signature[1] // 2)
         if kind == "powerup":

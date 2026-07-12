@@ -140,6 +140,32 @@ def bomb_sprite():
     return _upscale(og.BOM, bg=FLOOR_BG)
 
 
+def _tint(grid, color, strength):
+    """Blend every pixel in `grid` toward `color` by `strength` (0-1)."""
+    cr, cg, cb = (color >> 16) & 0xFF, (color >> 8) & 0xFF, color & 0xFF
+    tinted = []
+    for row in grid:
+        new_row = []
+        for px in row:
+            r, g, b = (px >> 16) & 0xFF, (px >> 8) & 0xFF, px & 0xFF
+            r += int((cr - r) * strength)
+            g += int((cg - g) * strength)
+            b += int((cb - b) * strength)
+            new_row.append((r << 16) | (g << 8) | b)
+        tinted.append(new_row)
+    return tinted
+
+
+@_memoize
+def bomb_flash_sprite():
+    # No dedicated "about to explode" art exists in the decoded GBA set
+    # (og.BOM is the only bomb sprite), so this reuses the real bomb's
+    # silhouette, just brightened -- render.py blinks between this and
+    # bomb_sprite() as a bomb's fuse runs down, same idea as the original
+    # explosion_sprite() being procedural rather than hand-drawn.
+    return _tint(bomb_sprite(), 0xFFFFFF, 0.6)
+
+
 @_memoize
 def portal_sprite(pair_index=0):
     # Color identifies which linked PAIR a portal belongs to, not which

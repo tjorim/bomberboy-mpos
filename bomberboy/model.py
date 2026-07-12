@@ -29,6 +29,19 @@ BOMB_BURN_MS = 1000
 # How often a kicked bomb advances one tile while it's rolling.
 BOMB_ROLL_STEP_MS = 120
 
+# Bomb "about to explode" blink, read by Bomb.blink_phase() below: no
+# blink for the first half of the fuse, a slow blink for the next
+# quarter, a fast blink for the final quarter. Presentation-only (0 =
+# normal, 1 = "flash"), but kept here rather than in render.py because
+# it's pure elapsed-time math with no lv/mpos dependency, and render.py
+# imports lvgl at module level -- unlike this file, nothing in it can be
+# unit-tested under plain CPython at all, even functions that don't
+# themselves touch lv.
+BOMB_BLINK_WARN_REMAINING_MS = BOMB_FUSE_MS // 2
+BOMB_BLINK_CRITICAL_REMAINING_MS = BOMB_FUSE_MS // 4
+BOMB_BLINK_WARN_PERIOD_MS = 300
+BOMB_BLINK_CRITICAL_PERIOD_MS = 120
+
 # Minimum time between a player's moves at Player.speed == 1 (the default,
 # before any SPEED_UP powerup); higher speed divides this down, same as
 # BOMB_ROLL_STEP_MS gates how often a rolling bomb advances. Not verified
@@ -124,6 +137,22 @@ class Bomb:
 
     def is_breakable(self):
         return False
+
+    def blink_phase(self, now):
+        """0 = normal, 1 = "flash" -- a presentation hint for how close
+        this bomb is to exploding. `now` should come from whichever
+        Game.now() this bomb belongs to (real time, or the synchronized
+        network frame clock in remote mode)."""
+        elapsed = now - self.placed_at
+        remaining = BOMB_FUSE_MS - elapsed
+        if remaining > BOMB_BLINK_WARN_REMAINING_MS:
+            return 0
+        period = (
+            BOMB_BLINK_CRITICAL_PERIOD_MS
+            if remaining <= BOMB_BLINK_CRITICAL_REMAINING_MS
+            else BOMB_BLINK_WARN_PERIOD_MS
+        )
+        return int(elapsed // period) % 2
 
 
 class PowerUp:
@@ -246,6 +275,14 @@ class Game:
         if 0 <= x < self.width and 0 <= y < self.height:
             return self.grid[x][y]
         return None
+
+    def now(self):
+        """The game's own clock (real time, or the synchronized network
+        frame clock in remote mode -- see Bomberboy._begin_game()). For
+        presentation code that needs "how long has this bomb been ticking"
+        without duplicating whichever clock this particular Game was built
+        with."""
+        return self._clock()
 
     def is_burning(self, x, y):
         return (x, y) in self._burning_tile_positions
