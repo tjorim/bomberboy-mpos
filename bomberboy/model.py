@@ -372,6 +372,19 @@ class Game:
         if isinstance(target, Portal):
             self._use_portal(player, target)
             return True
+        if isinstance(target, Player):
+            # Only a dead player's tile can reach here -- player_at()
+            # above already found and handled any live occupant.
+            # Player.is_walkable() is unconditionally True, so without
+            # this check the walker would fall through to the generic
+            # _enter_tile() below with the dead Player object itself as
+            # "the tile being left behind": that erases the body from the
+            # grid entirely (dedicated dead-player sprite art exists
+            # specifically so bodies stay visible -- see
+            # sprites.player_sprite(dead=True)) and leaves the walker's
+            # own standing_on pointing at a Player instead of a real
+            # tile. Simplest correct behavior: a body blocks the tile.
+            return False
 
         self._enter_tile(player, tx, ty, target)
         return True
@@ -569,12 +582,27 @@ class Game:
     def _explode(self, bomb):
         owner = bomb.owner
         owner.bombs_available += 1
+        owner_still_here = owner.standing_on is bomb
         self.set_tile(bomb.x, bomb.y, bomb.under)
-        if owner.standing_on is bomb:
+        if owner_still_here:
             owner.standing_on = bomb.under
         if bomb in self.bombs:
             self.bombs.remove(bomb)
-        self._ignite(bomb.x, bomb.y)
+        if owner_still_here:
+            # The grid at the owner's own position held the Bomb, not
+            # them (place_bomb()'s convention, so blast-chaining could
+            # find the bomb there via tile_at() -- see move_player()'s
+            # comments on this). That's now been restored to bomb.under
+            # above, so _ignite() at this position would see that tile
+            # instead of the owner and they'd take zero damage from their
+            # own bomb even if they never moved off it -- placing a bomb
+            # and simply not moving was a free, undetectable way to avoid
+            # its blast entirely. Hit them directly, matching exactly what
+            # _ignite()'s own Player branch does for every other
+            # player-occupied tile a blast reaches.
+            self._hit_player(owner)
+        else:
+            self._ignite(bomb.x, bomb.y)
         for direction in (UP, DOWN, LEFT, RIGHT):
             dx, dy = DELTA[direction]
             x, y = bomb.x, bomb.y

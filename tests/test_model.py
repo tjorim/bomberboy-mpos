@@ -66,6 +66,26 @@ class MovementTests(unittest.TestCase):
         self.assertEqual((self.p1.x, self.p1.y), (2, 1))
         self.assertEqual((self.p2.x, self.p2.y), (1, 1))
 
+    def test_a_dead_player_blocks_movement_instead_of_being_erased(self):
+        # Player.is_walkable() is unconditionally True (dead or alive),
+        # and player_at() deliberately excludes dead players so they
+        # don't participate in kick/shift/swap -- but move_player() used
+        # to fall through to the generic floor-walk path in that case,
+        # using the dead Player object itself as "the tile left behind".
+        # That erased the body from the grid (dedicated dead-player
+        # sprite art exists specifically so it stays visible) and left
+        # the walker's own standing_on pointing at a Player instead of a
+        # real tile.
+        self.game.set_tile(self.p2.x, self.p2.y, Floor())
+        self.p2.x, self.p2.y = self.p1.x + 1, self.p1.y
+        self.game.set_tile(self.p2.x, self.p2.y, self.p2)
+        self.p2.lives = 0
+        self.assertTrue(self.p2.is_dead)
+
+        self.assertFalse(self.game.move_player(self.p1, RIGHT))
+        self.assertEqual((self.p1.x, self.p1.y), (1, 1))
+        self.assertIs(self.game.tile_at(self.p2.x, self.p2.y), self.p2)
+
 
 class BombTests(unittest.TestCase):
     def setUp(self):
@@ -108,6 +128,38 @@ class BombTests(unittest.TestCase):
         self.game.tick()  # extinguish: damage applied now
         self.assertFalse(self.p2.on_fire)
         self.assertEqual(self.p2.lives, lives_before - 1)
+
+    def test_owner_takes_damage_from_their_own_bomb_if_still_standing_on_it(self):
+        # _explode() used to restore the grid at the bomb's own position
+        # to bomb.under (e.g. Floor) *before* igniting it, so if the owner
+        # never moved off their own bomb, _ignite() would see that
+        # restored tile instead of them -- placing a bomb and simply not
+        # moving was a free, undetectable way to dodge its own blast.
+        lives_before = self.p1.lives
+        self.game.place_bomb(self.p1)
+        time.sleep(0.02)
+        self.game.tick()
+        self.assertTrue(self.p1.on_fire)
+        self.assertEqual(self.p1.lives, lives_before)
+        time.sleep(0.02)
+        self.game.tick()
+        self.assertEqual(self.p1.lives, lives_before - 1)
+
+    def test_owner_who_moved_away_is_not_hit_at_the_bombs_old_position(self):
+        self.game.place_bomb(self.p1)
+        origin = (self.p1.x, self.p1.y)
+        # Simulate having walked well clear of the blast (flame_range 1
+        # only reaches directly-adjacent tiles) via direct placement
+        # rather than pathing through the maze, which isn't guaranteed
+        # clear beyond the spawn pocket -- matches this suite's existing
+        # pattern for other tests that don't care about the path itself.
+        self.game.set_tile(*origin, Floor())
+        self.p1.standing_on = Floor()
+        self.p1.x, self.p1.y = origin[0] + 3, origin[1] + 3
+        self.game.set_tile(self.p1.x, self.p1.y, self.p1)
+        time.sleep(0.02)
+        self.game.tick()
+        self.assertFalse(self.p1.on_fire)
 
     def test_explosion_stops_at_wall(self):
         game = Game(MazeLevel())
