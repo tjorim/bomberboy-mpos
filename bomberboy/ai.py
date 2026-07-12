@@ -89,9 +89,16 @@ def _bfs_nearest(game, start, is_goal, avoid):
         return []
     visited = {start}
     queue = [start]
+    # queue.pop(0) is O(len(queue)) -- it shifts every remaining element --
+    # so a full BFS was O(cells^2) instead of O(cells). An index-based read
+    # pointer keeps FIFO order (same traversal, same result) in O(1) per
+    # dequeue without adding a collections.deque dependency this can't
+    # verify against MicroPython's implementation.
+    head = 0
     came_from = {}
-    while queue:
-        current = queue.pop(0)
+    while head < len(queue):
+        current = queue[head]
+        head += 1
         cx, cy = current
         for dx, dy in DELTA.values():
             nxt = (cx + dx, cy + dy)
