@@ -318,6 +318,38 @@ class ShiftAndKickTests(unittest.TestCase):
         self.assertIsNone(bomb.rolling)
         self.assertIs(p1.standing_on, bomb)
 
+    def test_cannot_swap_when_the_initiating_player_is_standing_on_a_bomb(self):
+        # Symmetric to the case above: move_player() originally only
+        # checked isinstance(target, Bomb) -- the *destination* tile --
+        # so it missed the case where `player`, the one initiating the
+        # move, is themselves standing on their own bomb. target there
+        # is just an ordinary Player (occupant), so the swap branch would
+        # have run and _swap_players() would have overwritten player's
+        # own grid cell (holding the Bomb) with the swapped-in occupant,
+        # losing the Bomb the grid needs there for fuse/blast-chain
+        # detection -- and later erasing whoever ends up standing there
+        # once the bomb explodes.
+        game = Game(OpenArenaLevel())
+        p1, p2 = game.players
+        game.set_tile(p1.x, p1.y, Floor())
+        p1.x, p1.y = 5, 5
+        game.set_tile(p1.x, p1.y, p1)
+        p1.standing_on = Floor()
+        self.assertTrue(game.place_bomb(p1))
+        bomb = game.bombs[0]
+        self.assertIs(game.tile_at(p1.x, p1.y), bomb)
+
+        game.set_tile(p2.x, p2.y, Floor())
+        p2.x, p2.y = 6, 5
+        game.set_tile(p2.x, p2.y, p2)
+
+        self.assertFalse(game.move_player(p1, RIGHT))
+        self.assertEqual((p1.x, p1.y), (5, 5))
+        self.assertEqual((p2.x, p2.y), (6, 5))
+        self.assertEqual((bomb.x, bomb.y), (5, 5))
+        self.assertIs(p1.standing_on, bomb)
+        self.assertIs(game.tile_at(5, 5), bomb)
+
     def test_kick_takes_priority_over_shift_when_player_has_both(self):
         game = Game(OpenArenaLevel())
         p1 = game.players[0]

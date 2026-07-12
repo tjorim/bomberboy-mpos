@@ -329,15 +329,20 @@ class Game:
         # without moving them.
         occupant = self.player_at(tx, ty, exclude=player)
         if occupant is not None:
-            if isinstance(target, Bomb):
+            if isinstance(target, Bomb) or isinstance(player.standing_on, Bomb):
                 # Neither a kick/shift (rolls the bomb out from under its
                 # owner) nor a normal swap is sound here: _swap_players()
-                # would overwrite this grid cell with the swapped-in
-                # player, losing the Bomb object the grid needs there for
-                # fuse/blast-chain detection (_ignite() and _explode() both
-                # look the bomb up via tile_at(), not just via game.bombs).
-                # Simplest correct behavior: you can't push past someone
-                # standing on a live bomb.
+                # would overwrite whichever grid cell holds the Bomb with
+                # a swapped-in player, losing the Bomb object the grid
+                # needs there for fuse/blast-chain detection (_ignite()
+                # and _explode() both look the bomb up via tile_at(), not
+                # just via game.bombs). Checking only target (occupant's
+                # tile) missed the symmetric case: player -- the one
+                # initiating the move -- can just as easily be the one
+                # standing on a live bomb, and _swap_players() would
+                # overwrite *that* cell instead. Simplest correct
+                # behavior either way: you can't swap if either side of
+                # the swap is standing on a live bomb.
                 return False
             return self._swap_players(player, occupant)
 
