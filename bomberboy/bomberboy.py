@@ -450,6 +450,16 @@ class Bomberboy(Activity):
             return
         for player_index, kind, direction in self.dj_input.read_actions():
             if self.mode == "remote":
+                # Every _PAD_ACTIONS entry already hardcodes player_index 0
+                # (the DJ Add-on is single-player big-button control, no P2
+                # mapping exists -- see dj_addon.py), so this is currently
+                # unreachable, not a live bug. Guarding it anyway, matching
+                # _on_key()'s remote branch (which only ever reads P1 keys):
+                # if the DJ mapping ever grows a second player, this stops
+                # it from silently routing their input into the *local*
+                # player's single synchronized network queue.
+                if player_index != 0:
+                    continue
                 # Route through the same synchronized-frame protocol as
                 # keyboard input in _on_key() -- calling
                 # _apply_player_action() here would mutate self.game

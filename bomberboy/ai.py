@@ -12,11 +12,16 @@ from model import Bomb, Crate, DELTA, Gunpowder, Player
 
 
 def _gunpowder_network(game):
+    # x, y are always in bounds by construction here, so grid[x][y]
+    # directly avoids tile_at()'s bounds check and method-call overhead
+    # for what's otherwise a 165-cell scan -- this runs on every bomb
+    # blast_cells()/_hypothetical_blast() computes, up to a few times per
+    # 350ms AI think-tick.
     return {
         (x, y)
         for x in range(game.width)
         for y in range(game.height)
-        if isinstance(game.tile_at(x, y), Gunpowder)
+        if isinstance(game.grid[x][y], Gunpowder)
     }
 
 
