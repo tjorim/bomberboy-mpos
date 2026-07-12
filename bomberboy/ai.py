@@ -8,7 +8,10 @@ the grid -- at most WIDTH*HEIGHT (165) cells, cheap even on an ESP32-S3, so
 no need for a fancier algorithm.
 """
 
-from model import Bomb, Crate, DELTA, Gunpowder, Player
+import model
+from model import Bomb, Crate, DELTA, Gunpowder, Player, Portal
+
+THINK_MS = 350
 
 # DELTA.values()/.items() were being re-evaluated on every call inside
 # BFS's per-node neighbor expansion and a few other per-cell checks below
@@ -34,7 +37,7 @@ def _gunpowder_network(game):
     }
 
 
-def blast_cells(game, bomb):
+def blast_cells(game, bomb, occupied_portal=None):
     """Cells a bomb's explosion would reach if it went off right now.
 
     Reaching any Gunpowder tile ignites the *entire* connected network in
@@ -51,7 +54,13 @@ def blast_cells(game, bomb):
         for _ in range(bomb.owner.flame_range):
             x, y = x + dx, y + dy
             tile = tile_at(x, y)
-            if tile is None or tile.stops_flame():
+            if tile is None:
+                break
+            # An empty portal stops flame, but a player standing on that
+            # portal replaces it in the grid and no longer does. Portal-aware
+            # pathfinding uses this option to evaluate the destination as it
+            # will exist immediately after teleporting.
+            if tile.stops_flame() and (x, y) != occupied_portal:
                 break
             cells.add((x, y))
             if isinstance(tile, Gunpowder):
@@ -68,7 +77,19 @@ def danger_cells(game):
     for bomb in game.bombs:
         danger |= blast_cells(game, bomb)
     danger |= game.burning_tile_positions()
+    for pair in game.upcoming_shrink_positions(2):
+        danger.update(pair)
     return danger
+
+
+def _portal_destination_is_dangerous(game, portal):
+    dest = portal.other
+    if dest is None or dest.occupied or game.player_at(dest.x, dest.y) is not None:
+        return True
+    pos = (dest.x, dest.y)
+    if pos in game.burning_tile_positions():
+        return True
+    return any(pos in blast_cells(game, bomb, occupied_portal=pos) for bomb in game.bombs)
 
 
 def _hypothetical_blast(game, x, y, flame_range, under=None):
@@ -96,13 +117,16 @@ def _is_walkable(tile):
     return tile is not None and tile.is_walkable() and not isinstance(tile, (Bomb, Player))
 
 
-def _bfs_nearest(game, start, is_goal, avoid):
-    """Shortest path (list of (x,y), excluding start) from start to the
-    nearest tile satisfying is_goal, only stepping on walkable tiles not in
-    avoid. Returns [] if start already satisfies is_goal, None if no path
-    exists."""
+def _bfs_nearest(game, start, is_goal, avoid, with_states=False):
+    """Shortest input path from start to the nearest matching game state.
+
+    Returned coordinates are adjacent input targets; for a portal move that
+    target is the entrance while the corresponding optional state is the far
+    endpoint. Returns [] if start already satisfies is_goal and None if no
+    path exists.
+    """
     if is_goal(start):
-        return []
+        return ([], []) if with_states else []
     tile_at = game.tile_at
     visited = {start}
     queue = [start]
@@ -118,24 +142,80 @@ def _bfs_nearest(game, start, is_goal, avoid):
         head += 1
         cx, cy = current
         for dx, dy in _DELTA_VALUES:
-            nxt = (cx + dx, cy + dy)
-            if nxt in visited or nxt in avoid:
+            step_target = (cx + dx, cy + dy)
+            if step_target in avoid:
                 continue
-            tile = tile_at(*nxt)
+            tile = tile_at(*step_target)
             if not _is_walkable(tile):
                 continue
-            visited.add(nxt)
-            came_from[nxt] = current
-            if is_goal(nxt):
-                path = [nxt]
-                node = current
+            resulting_pos = step_target
+            if isinstance(tile, Portal):
+                if _portal_destination_is_dangerous(game, tile):
+                    continue
+                resulting_pos = (tile.other.x, tile.other.y)
+                if resulting_pos in avoid:
+                    continue
+            if resulting_pos in visited:
+                continue
+            visited.add(resulting_pos)
+            came_from[resulting_pos] = (current, step_target)
+            if is_goal(resulting_pos):
+                actions = []
+                states = []
+                node = resulting_pos
                 while node != start:
-                    path.append(node)
-                    node = came_from[node]
-                path.reverse()
-                return path
-            queue.append(nxt)
+                    previous, action_target = came_from[node]
+                    actions.append(action_target)
+                    states.append(node)
+                    node = previous
+                actions.reverse()
+                states.reverse()
+                return (actions, states) if with_states else actions
+            queue.append(resulting_pos)
     return None
+
+
+def _path_clears_threats_in_time(start, states, threats, first_move_delay_ms):
+    """Whether a path leaves every intersecting blast before it detonates.
+
+    `states` are the actual player positions after each move (which can
+    differ from the adjacent input target when a portal is used). The first
+    move is immediate while re-planning an existing escape, but happens one
+    AI interval after deciding to plant a hypothetical bomb.
+    """
+    positions = [start] + states
+    for cells, remaining_ms in threats:
+        dangerous = [index for index, pos in enumerate(positions) if pos in cells]
+        if not dangerous:
+            continue
+        last_dangerous = dangerous[-1]
+        if last_dangerous == len(states):
+            return False
+        exit_delay = first_move_delay_ms + last_dangerous * THINK_MS
+        if exit_delay >= remaining_ms:
+            return False
+    return True
+
+
+def _live_bomb_threats(game):
+    """Current blast cells paired with chain-reaction-aware deadlines."""
+    bombs = list(game.bombs)
+    blasts = [blast_cells(game, bomb) for bomb in bombs]
+    now = game.now()
+    deadlines = [bomb.remaining_fuse_ms(now) for bomb in bombs]
+    # If an earlier bomb reaches another bomb, the latter detonates at the
+    # earlier deadline and can in turn trigger more bombs. Relax until the
+    # chain graph reaches a fixed point (the board has only a few bombs).
+    changed = True
+    while changed:
+        changed = False
+        for source_index, source_cells in enumerate(blasts):
+            source_deadline = deadlines[source_index]
+            for target_index, target in enumerate(bombs):
+                if (target.x, target.y) in source_cells and source_deadline < deadlines[target_index]:
+                    deadlines[target_index] = source_deadline
+                    changed = True
+    return list(zip(blasts, deadlines))
 
 
 def _adjacent_to_crate(game, pos):
@@ -183,8 +263,24 @@ def _has_escape_after_bombing(game, bot, danger):
     # is treated as impassable during the search.
     blast = _hypothetical_blast(game, bot.x, bot.y, bot.flame_range, under=bot.standing_on)
     combined = danger | blast
-    escape = _bfs_nearest(game, (bot.x, bot.y), lambda pos: pos not in combined, avoid=danger)
-    return bool(escape)
+    result = _bfs_nearest(
+        game,
+        (bot.x, bot.y),
+        lambda pos: pos not in combined,
+        avoid=danger,
+        with_states=True,
+    )
+    if result is None:
+        return False
+    actions, states = result
+    if not actions:
+        return False
+    return _path_clears_threats_in_time(
+        (bot.x, bot.y),
+        states,
+        [(blast, model.BOMB_FUSE_MS)],
+        first_move_delay_ms=THINK_MS,
+    )
 
 
 def _direction_towards(bot, target):
@@ -208,6 +304,28 @@ def choose_action(game, bot, opponent):
 
     if here in danger:
         escape = _bfs_nearest(game, here, lambda pos: pos not in danger, avoid=danger - {here})
+        if escape is None:
+            # No path that stays clear of every pending blast. That's the
+            # normal state right after planting our own bomb: we're at the
+            # blast center, so every first step is a blast cell and the
+            # strict search above can't expand at all -- the bot would
+            # freeze on its own bomb and die. Pending-blast cells are fine
+            # to travel *through* before the fuse runs out (the same rule
+            # _has_escape_after_bombing used to approve planting it), so
+            # retry treating only tiles actually on fire as impassable.
+            burning = game.burning_tile_positions()
+            result = _bfs_nearest(
+                game,
+                here,
+                lambda pos: pos not in danger,
+                avoid=burning - {here},
+                with_states=True,
+            )
+            if result is not None:
+                escape, states = result
+                threats = _live_bomb_threats(game)
+                if not _path_clears_threats_in_time(here, states, threats, first_move_delay_ms=0):
+                    escape = None
         if escape:
             direction = _direction_towards(bot, escape[0])
             if direction:
@@ -225,6 +343,21 @@ def choose_action(game, bot, opponent):
             direction = _direction_towards(bot, crate_path[0])
             if direction:
                 return ("move", direction)
+
+    if game.is_shrinking():
+        center = (game.width // 2, game.height // 2)
+        current_radius = max(abs(here[0] - center[0]), abs(here[1] - center[1]))
+        if current_radius > 0:
+            center_path = _bfs_nearest(
+                game,
+                here,
+                lambda pos: max(abs(pos[0] - center[0]), abs(pos[1] - center[1])) < current_radius,
+                avoid=danger,
+            )
+            if center_path:
+                direction = _direction_towards(bot, center_path[0])
+                if direction:
+                    return ("move", direction)
 
     opponent_pos = (opponent.x, opponent.y)
     path = _bfs_nearest(game, here, lambda pos: _adjacent_to(pos, opponent_pos), avoid=danger)

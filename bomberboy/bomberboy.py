@@ -35,7 +35,7 @@ from network_play import (
 from render import BoardRenderer
 
 HUD_HEIGHT = 20
-AI_THINK_MS = 350
+AI_THINK_MS = ai.THINK_MS
 TICK_MS = 100
 
 _P2_KEYS = {
@@ -102,6 +102,15 @@ class Bomberboy(Activity):
                 timer.delete()
                 setattr(self, attr, None)
 
+    def _replace_focus_group(self, objects, focused=None):
+        """Make the visible view the sole owner of keyboard/joystick focus."""
+        group = lv.group_get_default()
+        group.remove_all_objs()
+        for obj in objects:
+            group.add_obj(obj)
+        if focused is not None:
+            lv.group_focus_obj(focused)
+
     def _show_menu(self):
         # Reaching the menu -- whether at startup, after backing out of a
         # match, or via the result screen's "Menu" button -- always means no
@@ -145,10 +154,19 @@ class Bomberboy(Activity):
         level_list = lv.list(screen)
         level_list.set_size(lv.pct(90), lv.pct(60))
         level_list.align(lv.ALIGN.BOTTOM_MID, 0, -4)
+        level_buttons = []
         for index, level_cls in enumerate(LEVELS):
             button = level_list.add_button(None, level_cls.name)
             button.add_event_cb(lambda e, i=index: self._start_level(i), lv.EVENT.CLICKED, None)
+            level_buttons.append(button)
 
+        # Creating interactive widgets auto-registers them in the default
+        # LVGL group. Rebuilding the menu used to leave the deleted menu or
+        # game screen in that group and append these new controls after it,
+        # so navigation history determined where focus went. Own the group
+        # explicitly and focus the active mode every time this view appears.
+        focusables = [bot_btn, two_p_btn, remote_btn] + level_buttons
+        self._replace_focus_group(focusables, mode_buttons[self.mode])
         self.setContentView(screen)
 
     def _set_mode(self, mode):
@@ -206,15 +224,12 @@ class Bomberboy(Activity):
         # focusing it rather than assuming group membership alone is
         # enough, avoids key events routing nowhere (dangling focus) or
         # into now-deleted menu widgets instead of _on_key() below.
-        group = lv.group_get_default()
-        group.remove_all_objs()
-        group.add_obj(screen)
+        self._replace_focus_group((screen,), screen)
         # lv_group_focus_obj() takes the object directly -- it's not a
         # group method the way add_obj()/remove_all_objs() are (those
         # genuinely take the group as their first C-API argument; this
         # one doesn't take a group at all). group.focus_obj(screen) would
         # raise AttributeError on real hardware.
-        lv.group_focus_obj(screen)
         screen.add_event_cb(self._on_key, lv.EVENT.KEY, None)
 
         self.setContentView(screen)
@@ -241,6 +256,9 @@ class Bomberboy(Activity):
         label.set_text("Looking for another badge...")
         label.center()
         self.network_status = label
+        # This view has no interactive controls; clearing the group prevents
+        # Back/navigation input from targeting the menu that was just hidden.
+        self._replace_focus_group(())
         self.setContentView(screen)
         try:
             self.network_link = EspNowLink()
@@ -600,6 +618,11 @@ class Bomberboy(Activity):
         lv.label(menu_btn).set_text("Menu")
         menu_btn.align(lv.ALIGN.CENTER, 0, 74)
         menu_btn.add_event_cb(lambda e: (self._close_network(), self._show_menu()), lv.EVENT.CLICKED, None)
+
+        # The game screen itself owned focus during play. Hand focus to the
+        # result actions now so arrows/Enter cannot keep targeting the hidden
+        # gameplay key handler behind them.
+        self._replace_focus_group((restart_btn, menu_btn), restart_btn)
 
         if self.mode == "remote":
             self._close_network()
