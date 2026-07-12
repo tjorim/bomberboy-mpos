@@ -29,6 +29,16 @@ BOMB_BURN_MS = 1000
 # How often a kicked bomb advances one tile while it's rolling.
 BOMB_ROLL_STEP_MS = 120
 
+# Minimum time between a player's moves at Player.speed == 1 (the default,
+# before any SPEED_UP powerup); higher speed divides this down, same as
+# BOMB_ROLL_STEP_MS gates how often a rolling bomb advances. Not verified
+# against real input timing -- keyboard repeat rate and the DJ Add-on's
+# REFRESH_MS poll cadence are both unknowns from here, so this may need
+# on-device tuning (see scripts/dev-setup.md's "things worth checking on
+# first run", which already flags the same category of issue for the
+# arena-shrink cadence).
+MOVE_COOLDOWN_MS = 150
+
 # The arena starts closing in with walls, spiraling inward from the
 # border, this long after a game starts.
 ARENA_SHRINK_START_MS = 120000
@@ -168,6 +178,11 @@ class Player:
         self.can_kick = False
         self.on_fire = False
         self.standing_on = None
+        # None, not 0, marks "never moved yet" -- 0 is a legitimate real
+        # timestamp too (an injected test clock starts there, same as
+        # DeterministicClockTests below), so it can't double as the sentinel
+        # without incorrectly blocking a player's very first move.
+        self.last_move_at = None
 
     def is_walkable(self):
         return True
@@ -196,6 +211,9 @@ class Player:
 
     def add_speed(self):
         self.speed = min(self.MAX_SPEED, self.speed + 1)
+
+    def move_cooldown_ms(self):
+        return MOVE_COOLDOWN_MS // self.speed
 
 
 class Game:
@@ -252,6 +270,10 @@ class Game:
     def move_player(self, player, direction):
         if player.is_dead or player.on_fire or self.game_over:
             return False
+        now = self._clock()
+        if player.last_move_at is not None and _elapsed_ms(player.last_move_at, now) < player.move_cooldown_ms():
+            return False
+        player.last_move_at = now
         player.facing = direction
         dx, dy = DELTA[direction]
         tx, ty = player.x + dx, player.y + dy

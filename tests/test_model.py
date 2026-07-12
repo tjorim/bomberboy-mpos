@@ -53,6 +53,7 @@ class MovementTests(unittest.TestCase):
     def test_wall_blocks_movement(self):
         # player 1 starts at (1,1); moving UP/LEFT runs into the border wall.
         self.assertFalse(self.game.move_player(self.p1, UP))
+        time.sleep(0.2)  # each check should fail on the wall, not the move cooldown
         self.assertFalse(self.game.move_player(self.p1, LEFT))
         self.assertEqual((self.p1.x, self.p1.y), (1, 1))
 
@@ -304,6 +305,7 @@ class ShiftAndKickTests(unittest.TestCase):
         # And it reappears on the grid once the player steps off again
         # (back the way they came -- (3,1) now holds the shifted bomb, and
         # straight up/down from (2,1) is a pillar wall in this layout).
+        time.sleep(0.2)  # clear the move cooldown (model.MOVE_COOLDOWN_MS)
         self.assertTrue(game.move_player(p1, LEFT))
         self.assertIsInstance(game.tile_at(2, 1), Gunpowder)
 
@@ -373,6 +375,7 @@ class PowerUpAndPortalTests(unittest.TestCase):
 
         # Walk away to plain floor -- not back through the portal.
         game.set_tile(portal_b.x + 1, portal_b.y, Floor())
+        time.sleep(0.2)  # clear the move cooldown (model.MOVE_COOLDOWN_MS)
         self.assertTrue(game.move_player(p1, RIGHT))
         self.assertFalse(portal_b.occupied)
 
@@ -486,6 +489,57 @@ class DeterministicClockTests(unittest.TestCase):
         now[0] = model.BOMB_FUSE_MS
         game.tick()
         self.assertEqual(len(game.bombs), 0)
+
+
+class MoveCooldownTests(unittest.TestCase):
+    """SPEED_UP used to increment Player.speed with nothing ever reading
+    it, so the powerup had zero gameplay effect. Player.move_cooldown_ms()
+    is the fix: speed divides down the minimum interval between accepted
+    moves.
+
+    OpenArenaLevel gives an open, crate-free lane to move along, but also
+    sets give_max_stats -- including speed = MAX_SPEED -- so every test
+    here resets p1.speed back to 1 (the real default elsewhere) to actually
+    exercise the cooldown instead of the trivially-short one at max speed.
+    """
+
+    def test_first_move_is_never_blocked_even_with_a_clock_starting_at_zero(self):
+        # last_move_at starts as None specifically so this doesn't collide
+        # with an injected clock legitimately starting at 0.
+        now = [0]
+        game = Game(OpenArenaLevel(), clock=lambda: now[0])
+        p1 = game.players[0]
+        p1.speed = 1
+        self.assertTrue(game.move_player(p1, RIGHT))
+
+    def test_move_is_rejected_before_the_cooldown_elapses(self):
+        now = [0]
+        game = Game(OpenArenaLevel(), clock=lambda: now[0])
+        p1 = game.players[0]
+        p1.speed = 1
+        self.assertTrue(game.move_player(p1, RIGHT))
+        pos = (p1.x, p1.y)
+        now[0] = model.MOVE_COOLDOWN_MS - 1
+        self.assertFalse(game.move_player(p1, RIGHT))
+        self.assertEqual((p1.x, p1.y), pos)
+
+    def test_move_succeeds_once_the_cooldown_elapses(self):
+        now = [0]
+        game = Game(OpenArenaLevel(), clock=lambda: now[0])
+        p1 = game.players[0]
+        p1.speed = 1
+        self.assertTrue(game.move_player(p1, RIGHT))
+        now[0] = model.MOVE_COOLDOWN_MS
+        self.assertTrue(game.move_player(p1, RIGHT))
+
+    def test_higher_speed_shortens_the_cooldown(self):
+        now = [0]
+        game = Game(OpenArenaLevel(), clock=lambda: now[0])
+        p1 = game.players[0]
+        p1.speed = 2  # half the base (speed-1) cooldown
+        self.assertTrue(game.move_player(p1, RIGHT))
+        now[0] = model.MOVE_COOLDOWN_MS // 2
+        self.assertTrue(game.move_player(p1, RIGHT))
 
 
 if __name__ == "__main__":

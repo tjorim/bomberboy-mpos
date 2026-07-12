@@ -504,9 +504,21 @@ class Bomberboy(Activity):
             p1_label = "P1" if self.two_player else "You"
             p2_label = "P2" if self.two_player else "Bot"
         self.hud.set_text(
-            "%s: %d lives, %d bombs, flame %d   %s: %d lives, %d bombs, flame %d"
-            % (p1_label, p1.lives, p1.bombs_available, p1.flame_range, p2_label, p2.lives, p2.bombs_available, p2.flame_range)
+            "%s: %d lives, %d bombs, flame %d%s   %s: %d lives, %d bombs, flame %d%s"
+            % (
+                p1_label, p1.lives, p1.bombs_available, p1.flame_range, self._speed_suffix(p1),
+                p2_label, p2.lives, p2.bombs_available, p2.flame_range, self._speed_suffix(p2),
+            )
         )
+
+    @staticmethod
+    def _speed_suffix(player):
+        # Speed is the only stat with no baseline value worth always
+        # showing (bombs/flame start meaningfully at 1 already) -- SPEED_UP
+        # used to have no visible effect at all (see model.MOVE_COOLDOWN_MS),
+        # so this only shows up once it actually matters, keeping the HUD
+        # text unchanged for the common case where nobody's picked it up.
+        return ", spd %d" % player.speed if player.speed > 1 else ""
 
     def _show_result(self):
         # The tick timer keeps running until the whole Activity pauses, not
