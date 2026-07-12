@@ -8,12 +8,29 @@ the grid -- at most WIDTH*HEIGHT (165) cells, cheap even on an ESP32-S3, so
 no need for a fancier algorithm.
 """
 
-from model import Bomb, Crate, DELTA, Player
+from model import Bomb, Crate, DELTA, Gunpowder, Player
+
+
+def _gunpowder_network(game):
+    return {
+        (x, y)
+        for x in range(game.width)
+        for y in range(game.height)
+        if isinstance(game.tile_at(x, y), Gunpowder)
+    }
 
 
 def blast_cells(game, bomb):
-    """Cells a bomb's explosion would reach if it went off right now."""
+    """Cells a bomb's explosion would reach if it went off right now.
+
+    Reaching any Gunpowder tile ignites the *entire* connected network in
+    one instant (Game._ignite_gunpowder_network), not just the tiles within
+    normal flame range -- without this, danger/escape checks below would
+    treat far-away gunpowder tiles as safe even though a blast anywhere in
+    the network would ignite them too.
+    """
     cells = {(bomb.x, bomb.y)}
+    ignites_gunpowder = isinstance(bomb.under, Gunpowder)
     for dx, dy in DELTA.values():
         x, y = bomb.x, bomb.y
         for _ in range(bomb.owner.flame_range):
@@ -22,8 +39,12 @@ def blast_cells(game, bomb):
             if tile is None or tile.stops_flame():
                 break
             cells.add((x, y))
+            if isinstance(tile, Gunpowder):
+                ignites_gunpowder = True
             if tile.is_breakable():
                 break
+    if ignites_gunpowder:
+        cells |= _gunpowder_network(game)
     return cells
 
 
@@ -35,8 +56,9 @@ def danger_cells(game):
     return danger
 
 
-def _hypothetical_blast(game, x, y, flame_range):
+def _hypothetical_blast(game, x, y, flame_range, under=None):
     cells = {(x, y)}
+    ignites_gunpowder = isinstance(under, Gunpowder)
     for dx, dy in DELTA.values():
         cx, cy = x, y
         for _ in range(flame_range):
@@ -45,8 +67,12 @@ def _hypothetical_blast(game, x, y, flame_range):
             if tile is None or tile.stops_flame():
                 break
             cells.add((cx, cy))
+            if isinstance(tile, Gunpowder):
+                ignites_gunpowder = True
             if tile.is_breakable():
                 break
+    if ignites_gunpowder:
+        cells |= _gunpowder_network(game)
     return cells
 
 
@@ -128,7 +154,7 @@ def _has_escape_after_bombing(game, bot, danger):
     # actual safety -- it only needs to not be on one of them by the time
     # it explodes. Only pre-existing danger (from other live bombs/fire)
     # is treated as impassable during the search.
-    blast = _hypothetical_blast(game, bot.x, bot.y, bot.flame_range)
+    blast = _hypothetical_blast(game, bot.x, bot.y, bot.flame_range, under=bot.standing_on)
     combined = danger | blast
     escape = _bfs_nearest(game, (bot.x, bot.y), lambda pos: pos not in combined, avoid=danger)
     return bool(escape)
