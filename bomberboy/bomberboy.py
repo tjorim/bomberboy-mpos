@@ -192,7 +192,7 @@ class Bomberboy(Activity):
     def _on_dj_tick(self, timer):
         if self.dj_input is None or self.game is None or self.game.game_over:
             return
-        for player_index, kind, direction in self.dj_input.read_actions(two_player=self.two_player):
+        for player_index, kind, direction in self.dj_input.read_actions():
             self._apply_player_action(player_index, kind, direction)
 
     def _on_tick(self, timer):

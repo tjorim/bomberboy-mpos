@@ -32,9 +32,11 @@ know or care which keyboard the key events are actually coming from.
 
 The Fri3d DJ Add-on is also probed directly at app startup for big-button
 accessibility input. Its existing 8-button pad order is translated into a
-left-cluster D-pad for player 1, plus large bomb buttons for player 1 and, in
-2-player mode, player 2. The gameplay mapping lives in `dj_addon.py` so it is
-easy to adjust after validating the physical layout on real hardware. If the
+linear, labelled top row for player-1 movement (left/up/down/right), plus the
+entire bottom row as one large, redundant bomb target. This gives one player
+complete big-button control against the AI or a remote opponent, without
+requiring the badge joystick. The gameplay mapping lives in `dj_addon.py` so
+it is easy to tune after hands-on accessibility testing. If the
 add-on or its driver is unavailable, Bomberboy silently keeps the normal
 keyboard/joystick controls.
 
