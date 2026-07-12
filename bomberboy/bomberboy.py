@@ -75,7 +75,26 @@ class Bomberboy(Activity):
         self.network_silence = 0
         self._show_menu()
 
+    def _start_game_timers(self):
+        if self.tick_timer is not None:
+            return
+        self.tick_timer = lv.timer_create(self._on_tick, TICK_MS, None)
+        self.ai_timer = lv.timer_create(self._on_ai_tick, AI_THINK_MS, None)
+        if self.dj_input is not None:
+            self.dj_timer = lv.timer_create(self._on_dj_tick, dj_addon.REFRESH_MS, None)
+
+    def _stop_game_timers(self):
+        for attr in ("tick_timer", "ai_timer", "dj_timer"):
+            timer = getattr(self, attr)
+            if timer is not None:
+                timer.delete()
+                setattr(self, attr, None)
+
     def _show_menu(self):
+        # Reaching the menu -- whether at startup, after backing out of a
+        # match, or via the result screen's "Menu" button -- always means no
+        # game should be ticking anymore.
+        self._stop_game_timers()
         screen = lv.obj()
         title = lv.label(screen)
         titles = {"bot": "Bomberboy - vs Bot", "local": "Bomberboy - Local", "remote": "Bomberboy - Remote"}
@@ -120,6 +139,11 @@ class Bomberboy(Activity):
         self._begin_game()
 
     def _begin_game(self, seed=None):
+        # A fresh game may be starting while a previous one's timers are
+        # still running (e.g. "Play Again" calls straight into this method
+        # without going through _show_menu() first), so always stop-then-
+        # start rather than assuming a clean slate.
+        self._stop_game_timers()
         self.result_shown = False
         if self.mode == "remote":
             self.network_time = 0
@@ -149,6 +173,7 @@ class Bomberboy(Activity):
 
         self.setContentView(screen)
         self._play("GameStart.wav")
+        self._start_game_timers()
 
         # Curtain-wipe reveal, ported from the Qt attempt's curtain.cpp --
         # the only fully-working piece of UI polish in that repo.
@@ -194,11 +219,17 @@ class Bomberboy(Activity):
             except Exception:
                 pass
             attempts += 1
-            if attempts == 30 and self.network_peer is None:
+            if attempts == 30 and self.network_peer is None and self.has_foreground():
                 self.network_status.set_text("No badge found. Still looking...")
             await TaskManager.sleep_ms(500)
 
     def _on_network_message(self, mac, message):
+        # This callback can fire from receive_loop() at any time, including
+        # right after the OS backgrounds the whole Activity but before that
+        # loop has noticed network_running/network_pairing went False --
+        # don't touch UI or start a game on a screen that isn't showing.
+        if not self.has_foreground():
+            return
         if mac is None:
             self._network_failed("ESP-NOW receive failed")
             return
@@ -245,7 +276,8 @@ class Bomberboy(Activity):
     async def _ack_and_start(self):
         try:
             await self.network_link.send(self.network_peer, ack_packet(self.network_seed))
-            self._begin_game(seed=self.network_seed)
+            if self.has_foreground():
+                self._begin_game(seed=self.network_seed)
         except Exception:
             self._network_failed("Could not start remote match")
 
@@ -255,6 +287,8 @@ class Bomberboy(Activity):
                 await self.network_link.send(self.network_peer, self.network_sync.frame_packet())
             except Exception:
                 self.network_silence += 1
+            if not self.has_foreground():
+                break
             actions = self.network_sync.pop_ready()
             if actions is not None:
                 self._apply_network_action(self.game.players[0], actions[0])
@@ -282,6 +316,8 @@ class Bomberboy(Activity):
     def _network_failed(self, text):
         self.network_running = False
         self.network_pairing = False
+        if not self.has_foreground():
+            return
         if self.game is not None and self.result_label is not None:
             self.result_label.set_text(text)
             self.result_label.remove_flag(lv.obj.FLAG.HIDDEN)
@@ -302,19 +338,16 @@ class Bomberboy(Activity):
 
     def onResume(self, screen):
         super().onResume(screen)
-        if self.game is not None and self.tick_timer is None:
-            self.tick_timer = lv.timer_create(self._on_tick, TICK_MS, None)
-            self.ai_timer = lv.timer_create(self._on_ai_tick, AI_THINK_MS, None)
-            if self.dj_input is not None:
-                self.dj_timer = lv.timer_create(self._on_dj_tick, dj_addon.REFRESH_MS, None)
+        # Only relevant when the whole Activity was backgrounded by the OS
+        # mid-game (onPause already tore the timers down in that case) and
+        # is now regaining focus -- _begin_game() itself starts the timers
+        # for a normal game start, so this would otherwise be a no-op.
+        if self.game is not None:
+            self._start_game_timers()
 
     def onPause(self, screen):
         super().onPause(screen)
-        for attr in ("tick_timer", "ai_timer", "dj_timer"):
-            timer = getattr(self, attr)
-            if timer is not None:
-                timer.delete()
-                setattr(self, attr, None)
+        self._stop_game_timers()
         self._clear_curtain()
         led_indicator.clear()
         self._close_network()
