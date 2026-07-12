@@ -257,6 +257,29 @@ class Game:
         if target is None:
             return False
 
+        # A player standing on their own just-placed bomb still has the
+        # grid cell at their own (x, y) showing that Bomb, not them --
+        # place_bomb() overwrites it and only player.standing_on tracks
+        # that they're still there (see place_bomb()/_enter_tile()). So
+        # player_at() has to be checked before the Bomb branch below, or
+        # bumping into an occupied bomb tile with kick/shift gets treated
+        # as an ordinary abandoned-bomb kick/shift instead of a player
+        # encounter -- which would roll the bomb out from under its owner
+        # without moving them.
+        occupant = self.player_at(tx, ty, exclude=player)
+        if occupant is not None:
+            if isinstance(target, Bomb):
+                # Neither a kick/shift (rolls the bomb out from under its
+                # owner) nor a normal swap is sound here: _swap_players()
+                # would overwrite this grid cell with the swapped-in
+                # player, losing the Bomb object the grid needs there for
+                # fuse/blast-chain detection (_ignite() and _explode() both
+                # look the bomb up via tile_at(), not just via game.bombs).
+                # Simplest correct behavior: you can't push past someone
+                # standing on a live bomb.
+                return False
+            return self._swap_players(player, occupant)
+
         if isinstance(target, Bomb):
             # Kick (classic Bomberman): the bomb rolls away on its own,
             # the player stays put. Shift: a single push, and the player
@@ -272,10 +295,6 @@ class Game:
                     self._enter_tile(player, tx, ty, restored)
                     return True
             return False
-
-        occupant = self.player_at(tx, ty, exclude=player)
-        if occupant is not None:
-            return self._swap_players(player, occupant)
 
         if not target.is_walkable():
             return False

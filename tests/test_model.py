@@ -226,6 +226,35 @@ class ShiftAndKickTests(unittest.TestCase):
         self.assertEqual((bomb.x, bomb.y), (3, 1))  # blocked by p2 at (4,1)
         self.assertIsNone(bomb.rolling)
 
+    def test_cannot_kick_a_bomb_out_from_under_the_player_standing_on_it(self):
+        # place_bomb() puts the Bomb object in the grid at the owner's own
+        # position (not the player) so blast-chaining can find it there --
+        # move_player() used to check isinstance(target, Bomb) before ever
+        # checking whether a live player (the owner, mid-placement) still
+        # occupies that tile, so another player with the kick powerup could
+        # roll the bomb away without the standing owner moving at all.
+        game = Game(OpenArenaLevel())
+        p1, p2 = game.players
+        p2.can_kick = True
+        game.set_tile(p1.x, p1.y, Floor())
+        p1.x, p1.y = 5, 5
+        game.set_tile(p1.x, p1.y, p1)
+        p1.standing_on = Floor()
+        self.assertTrue(game.place_bomb(p1))
+        bomb = game.bombs[0]
+        self.assertIs(game.tile_at(p1.x, p1.y), bomb)
+
+        game.set_tile(p2.x, p2.y, Floor())
+        p2.x, p2.y = 4, 5
+        game.set_tile(p2.x, p2.y, p2)
+
+        self.assertFalse(game.move_player(p2, RIGHT))
+        self.assertEqual((p1.x, p1.y), (5, 5))
+        self.assertEqual((p2.x, p2.y), (4, 5))
+        self.assertEqual((bomb.x, bomb.y), (5, 5))
+        self.assertIsNone(bomb.rolling)
+        self.assertIs(p1.standing_on, bomb)
+
     def test_kick_takes_priority_over_shift_when_player_has_both(self):
         game = Game(OpenArenaLevel())
         p1 = game.players[0]
