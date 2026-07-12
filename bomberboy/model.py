@@ -601,8 +601,18 @@ class Game:
             # _ignite()'s own Player branch does for every other
             # player-occupied tile a blast reaches.
             self._hit_player(owner)
-        else:
-            self._ignite(bomb.x, bomb.y)
+        # Ignite the tile itself either way -- skipping this when
+        # owner_still_here (as an earlier version of this fix did) left
+        # two things broken: the origin tile never got marked burning, so
+        # no fire renders there even though the player standing on it is
+        # now invisible in the grid representation anyway (nothing to
+        # visually explain why input stopped responding); and if the
+        # bomb was on Gunpowder, the network under the player would never
+        # ignite and propagate, since only _ignite()'s own Gunpowder
+        # branch triggers that chain. tile_at() here sees bomb.under
+        # (restored above), never the owner, so this can't double-hit
+        # them the way _ignite()'s Player branch would.
+        self._ignite(bomb.x, bomb.y)
         for direction in (UP, DOWN, LEFT, RIGHT):
             dx, dy = DELTA[direction]
             x, y = bomb.x, bomb.y

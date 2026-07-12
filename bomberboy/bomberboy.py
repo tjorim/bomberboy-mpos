@@ -195,7 +195,26 @@ class Bomberboy(Activity):
         self.result_label.align(lv.ALIGN.CENTER, 0, -10)
         self.result_label.add_flag(lv.obj.FLAG.HIDDEN)
 
-        lv.group_get_default().add_obj(screen)
+        # The menu's buttons/level list (re)join the default input group
+        # implicitly (nothing in this file ever registers them explicitly,
+        # yet joystick navigation already selects them on real hardware --
+        # so mpos/LVGL must be auto-registering interactive widgets into
+        # it). Those accumulate across every menu visit and are never
+        # removed, so by the time a game starts, the group can hold
+        # references to widgets from a screen setContentView() already
+        # deleted. Clearing it before adding this screen, then explicitly
+        # focusing it rather than assuming group membership alone is
+        # enough, avoids key events routing nowhere (dangling focus) or
+        # into now-deleted menu widgets instead of _on_key() below.
+        group = lv.group_get_default()
+        group.remove_all_objs()
+        group.add_obj(screen)
+        # lv_group_focus_obj() takes the object directly -- it's not a
+        # group method the way add_obj()/remove_all_objs() are (those
+        # genuinely take the group as their first C-API argument; this
+        # one doesn't take a group at all). group.focus_obj(screen) would
+        # raise AttributeError on real hardware.
+        lv.group_focus_obj(screen)
         screen.add_event_cb(self._on_key, lv.EVENT.KEY, None)
 
         self.setContentView(screen)
