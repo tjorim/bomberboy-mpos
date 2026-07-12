@@ -42,10 +42,11 @@ class DJInput:
     def probe(cls):
         """Return a DJInput when the add-on is attached, otherwise None."""
         try:
-            mpos = __import__("mpos")
-            dj_module = __import__("drivers.fri3d.dj", None, None, ("DJAddon",))
+            import mpos
+            from drivers.fri3d.dj import DJAddon
+
             bus = mpos.DeviceManager.getBus(type="i2c")
-            addon = dj_module.DJAddon(i2c_bus=bus)
+            addon = DJAddon(i2c_bus=bus)
             if addon.is_alive():
                 return cls(addon)
         except Exception:

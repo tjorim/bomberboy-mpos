@@ -351,24 +351,20 @@ class Bomberboy(Activity):
             if action is not None:
                 self.network_sync.queue(action)
             return
-        human = self.game.players[0]
-        moved = False
         if key == lv.KEY.LEFT:
-            moved = self.game.move_player(human, LEFT)
+            self._apply_player_action(0, "move", LEFT)
         elif key == lv.KEY.RIGHT:
-            moved = self.game.move_player(human, RIGHT)
+            self._apply_player_action(0, "move", RIGHT)
         elif key == lv.KEY.UP:
-            moved = self.game.move_player(human, UP)
+            self._apply_player_action(0, "move", UP)
         elif key == lv.KEY.DOWN:
-            moved = self.game.move_player(human, DOWN)
+            self._apply_player_action(0, "move", DOWN)
         elif key in (lv.KEY.ENTER, 0x20):
             self._apply_player_action(0, "bomb")
         elif self.two_player and key in _P2_KEYS:
-            moved = self.game.move_player(self.game.players[1], _P2_KEYS[key])
+            self._apply_player_action(1, "move", _P2_KEYS[key])
         elif self.two_player and key == _P2_BOMB_KEY:
             self._apply_player_action(1, "bomb")
-        if moved:
-            self._refresh()
 
     def _apply_player_action(self, player_index, kind, direction=None):
         if self.game is None or self.game.game_over:
@@ -378,7 +374,7 @@ class Bomberboy(Activity):
         if player_index == 1 and not self.two_player:
             return
         player = self.game.players[player_index]
-        if kind == "move":
+        if kind == "move" and direction is not None:
             if self.game.move_player(player, direction):
                 self._refresh()
         elif kind == "bomb":
