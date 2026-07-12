@@ -145,6 +145,29 @@ class BombTests(unittest.TestCase):
         self.game.tick()
         self.assertEqual(self.p1.lives, lives_before - 1)
 
+    def test_origin_tile_is_marked_burning_even_when_owner_is_still_on_it(self):
+        # An earlier version of this fix skipped _ignite(bomb.x, bomb.y)
+        # entirely when the owner was still standing on it, so nothing
+        # marked the tile as burning -- no fire rendered there, and if the
+        # bomb was on gunpowder, the network under the player would never
+        # ignite (see the next test). Caught by Gemini Code Assist review
+        # on the PR that introduced the owner-damage fix:
+        # https://github.com/tjorim/bomberboy-mpos/pull/12#discussion_r3566685249
+        self.game.place_bomb(self.p1)
+        origin = (self.p1.x, self.p1.y)
+        time.sleep(0.02)
+        self.game.tick()
+        self.assertTrue(self.game.is_burning(*origin))
+
+    def test_gunpowder_under_the_owner_still_ignites_the_whole_network(self):
+        self.p1.standing_on = Gunpowder()
+        other_gunpowder = (self.p1.x + 3, self.p1.y)
+        self.game.set_tile(*other_gunpowder, Gunpowder())
+        self.assertTrue(self.game.place_bomb(self.p1))
+        time.sleep(0.02)
+        self.game.tick()
+        self.assertIn(other_gunpowder, self.game.burning_tile_positions())
+
     def test_owner_who_moved_away_is_not_hit_at_the_bombs_old_position(self):
         self.game.place_bomb(self.p1)
         origin = (self.p1.x, self.p1.y)
