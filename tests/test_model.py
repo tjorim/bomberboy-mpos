@@ -326,6 +326,37 @@ class PowerUpAndPortalTests(unittest.TestCase):
         self.assertTrue(game.move_player(p1, RIGHT))
         self.assertEqual((p1.x, p1.y), (portal_b.x, portal_b.y))
 
+    def test_portal_stops_blocking_teleport_after_the_player_walks_away(self):
+        # dest.occupied was only ever cleared by _use_portal() itself (on
+        # the *source* side of a later teleport) -- walking away from a
+        # portal normally, through _enter_tile(), never cleared it, so a
+        # portal stayed permanently un-teleportable-into for the rest of
+        # the match after its first arrival, even with nobody standing on
+        # it anymore.
+        game = Game(PortalMazeLevel())
+        p1, p2 = game.players
+        portal_a = game.portals[0]
+        portal_b = portal_a.other
+
+        p1.x, p1.y = portal_a.x - 1, portal_a.y
+        game.set_tile(p1.x, p1.y, p1)
+        p1.standing_on = Floor()
+        self.assertTrue(game.move_player(p1, RIGHT))
+        self.assertEqual((p1.x, p1.y), (portal_b.x, portal_b.y))
+        self.assertTrue(portal_b.occupied)
+
+        # Walk away to plain floor -- not back through the portal.
+        game.set_tile(portal_b.x + 1, portal_b.y, Floor())
+        self.assertTrue(game.move_player(p1, RIGHT))
+        self.assertFalse(portal_b.occupied)
+
+        # A second player can now teleport into portal_b too.
+        p2.x, p2.y = portal_a.x - 1, portal_a.y
+        game.set_tile(p2.x, p2.y, p2)
+        p2.standing_on = Floor()
+        game.move_player(p2, RIGHT)
+        self.assertEqual((p2.x, p2.y), (portal_b.x, portal_b.y))
+
 
 class GameOverTests(unittest.TestCase):
     def test_game_ends_when_a_player_runs_out_of_lives(self):

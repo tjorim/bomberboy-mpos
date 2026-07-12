@@ -208,6 +208,11 @@ class Game:
         self.portals = level.portals
         self.bombs = []
         self._burning = []  # list of dicts: {"x","y","expire_at"}
+        # Kept in lockstep with _burning's "tile" entries so is_burning() --
+        # called once per board tile on every render pass, i.e. up to a few
+        # hundred times a second during gameplay -- is an O(1) set lookup
+        # instead of an O(len(_burning)) scan of the whole list per tile.
+        self._burning_tile_positions = set()
         self.game_over = False
         self.winner = None
         self._clock = clock or _now_ms
@@ -225,13 +230,10 @@ class Game:
         return None
 
     def is_burning(self, x, y):
-        for entry in self._burning:
-            if entry["kind"] == "tile" and entry["x"] == x and entry["y"] == y:
-                return True
-        return False
+        return (x, y) in self._burning_tile_positions
 
     def burning_tile_positions(self):
-        return {(entry["x"], entry["y"]) for entry in self._burning if entry["kind"] == "tile"}
+        return set(self._burning_tile_positions)
 
     def set_tile(self, x, y, tile):
         self.grid[x][y] = tile
@@ -311,7 +313,18 @@ class Game:
         return True
 
     def _enter_tile(self, player, x, y, tile_left_behind):
-        self.set_tile(player.x, player.y, player.standing_on or Floor())
+        vacated = player.standing_on or Floor()
+        if isinstance(vacated, Portal):
+            # _use_portal() clears the *source* portal's occupied flag as
+            # part of an actual teleport, but that's the only place that
+            # ever did -- simply walking off a portal (to plain floor, a
+            # crate-revealed powerup, shifting a bomb, etc.) went through
+            # here instead and never cleared it, so a portal stayed
+            # permanently "occupied" and un-teleportable-into for the rest
+            # of the match after its first use, even once nobody was
+            # actually standing on it anymore.
+            vacated.occupied = False
+        self.set_tile(player.x, player.y, vacated)
         player.standing_on = tile_left_behind
         player.x, player.y = x, y
         self.set_tile(x, y, player)
@@ -540,10 +553,10 @@ class Game:
         self._burning.append({"kind": "player", "player": player, "started_at": self._clock()})
 
     def _mark_burning(self, x, y):
-        for entry in self._burning:
-            if entry.get("kind") == "tile" and entry["x"] == x and entry["y"] == y:
-                return
+        if (x, y) in self._burning_tile_positions:
+            return
         self._burning.append({"kind": "tile", "x": x, "y": y, "started_at": self._clock()})
+        self._burning_tile_positions.add((x, y))
 
     def _resolve_burning(self, now):
         remaining = []
@@ -555,6 +568,7 @@ class Game:
                 self._extinguish_player(entry["player"])
             else:
                 self._extinguish_tile(entry["x"], entry["y"])
+                self._burning_tile_positions.discard((entry["x"], entry["y"]))
         self._burning = remaining
 
     def _extinguish_tile(self, x, y):
