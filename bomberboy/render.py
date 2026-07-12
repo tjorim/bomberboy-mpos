@@ -44,7 +44,17 @@ class BoardRenderer:
         tile = self.game.tile_at(x, y)
         burning = self.game.is_burning(x, y)
         if isinstance(tile, Player):
-            return ("player", tile.player_id, tile.facing, tile.is_dead)
+            # is_burning()/burning above only tracks *tile* burn entries --
+            # Game._hit_player() records an on-fire player as its own
+            # separate "player"-kind entry in _burning, never added to the
+            # position set (see model.py), so a player standing on their
+            # own tile never shows up as "burning" through that path. Use
+            # the player's own on_fire flag directly instead, or a player
+            # who's on fire (unable to move or place a bomb for about a
+            # second, per model.BOMB_BURN_MS) renders identically to one
+            # who isn't -- no visual cue at all for why input stopped
+            # working.
+            return ("player", tile.player_id, tile.facing, tile.is_dead, tile.on_fire)
         if isinstance(tile, Bomb):
             return ("bomb",)
         if isinstance(tile, Crate):
@@ -81,7 +91,9 @@ class BoardRenderer:
                 return sprites.powerup_sprite(power_kind)
             return sprites.crate_sprite()
         if kind == "player":
-            _, player_id, facing, dead = signature
+            _, player_id, facing, dead, on_fire = signature
+            if on_fire and not dead:
+                return sprites.explosion_sprite()
             return sprites.player_sprite(player_id, facing, dead=dead)
         return sprites.floor_sprite()
 
