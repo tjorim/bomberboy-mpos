@@ -211,6 +211,32 @@ class ShiftAndKickTests(unittest.TestCase):
         self.assertEqual((bomb.x, bomb.y), (3, 1))  # blocked by the wall at (4,1)
         self.assertIsNone(bomb.rolling)
 
+    def test_kicked_bomb_stops_before_a_portal(self):
+        # Portal.is_walkable() is just "not occupied", so without an
+        # explicit check a rolling bomb would park on top of a portal
+        # instead of stopping -- with nothing to actually teleport it the
+        # way _use_portal() teleports a player, leaving the grid showing
+        # the Bomb instead of the Portal while portal.occupied never gets
+        # set, so a player could still teleport into that same tile and
+        # silently overwrite the bomb.
+        game = Game(PortalMazeLevel())
+        p1 = game.players[0]
+        p1.can_kick = True
+        portal = game.portals[0].other  # (11, 7); room to its left for a clear lane
+        for x in (portal.x - 3, portal.x - 2, portal.x - 1):
+            game.set_tile(x, portal.y, Floor())
+        bomb = self._place_bomb(game, portal.x - 2, portal.y, p1)
+        p1.x, p1.y = portal.x - 3, portal.y
+        game.set_tile(p1.x, p1.y, p1)
+        self.assertTrue(game.move_player(p1, RIGHT))
+        self.assertEqual((bomb.x, bomb.y), (portal.x - 1, portal.y))
+        time.sleep(0.02)
+        game.tick()
+        self.assertEqual((bomb.x, bomb.y), (portal.x - 1, portal.y))  # blocked by the portal
+        self.assertIsNone(bomb.rolling)
+        self.assertIs(game.tile_at(portal.x, portal.y), portal)
+        self.assertFalse(portal.occupied)
+
     def test_kicked_bomb_stops_before_hitting_a_player(self):
         game = Game(OpenArenaLevel())
         p1, p2 = game.players

@@ -346,7 +346,20 @@ class Game:
         on success, or None if blocked."""
         nx, ny = bomb.x + dx, bomb.y + dy
         beyond = self.tile_at(nx, ny)
-        if beyond is None or not beyond.is_walkable() or isinstance(beyond, Player):
+        if beyond is None or not beyond.is_walkable() or isinstance(beyond, (Player, Portal)):
+            # Portal is otherwise walkable (Portal.is_walkable() is just
+            # "not occupied"), but nothing here teleports a bomb the way
+            # _use_portal() teleports a player -- a kicked/shifted bomb
+            # would just park on top of the portal, with bomb.under
+            # becoming the Portal object and the grid showing the Bomb
+            # instead of it, while portal.occupied stays False the whole
+            # time (only _use_portal()/_enter_tile() ever touch that flag).
+            # A player could then still "successfully" teleport into that
+            # same tile and overwrite the bomb in the grid entirely --
+            # it'd still explode on schedule via game.bombs, but wouldn't
+            # damage whoever's now standing there, since _ignite() looks
+            # the tile up via tile_at(), not game.bombs. Simplest correct
+            # behavior: bombs don't roll onto portals, same as walls.
             return None
         restored = bomb.under
         self.set_tile(bomb.x, bomb.y, restored)
