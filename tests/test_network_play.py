@@ -10,6 +10,7 @@ from network_play import (
     hello_packet,
     parse_packet,
     start_packet,
+    _packet,
 )
 
 
@@ -56,6 +57,19 @@ class FrameSynchronizerTests(unittest.TestCase):
         recovery_packet = first.frame_packet()
         second.receive(recovery_packet)
         self.assertEqual(second.pop_ready(), ("-", "-"))
+
+    def test_receive_does_not_resurrect_already_consumed_frames(self):
+        # Every packet repeats the sender's previous-frame action too (loss
+        # recovery), so once a frame has already been popped locally, a
+        # packet still carrying that old frame as "previous" must not
+        # resurrect a dict entry for it -- that entry would never be read
+        # (frame numbers only move forward) or cleaned up again, leaking
+        # memory for the rest of a long match.
+        sync = FrameSynchronizer(2)
+        sync.frame = 5  # frames 0-4 already popped and cleared
+        packet = _packet("F", 5, "L", 4, "R")
+        self.assertTrue(sync.receive(packet))
+        self.assertEqual(sync._actions, {(5, 1): "L"})
 
 
 if __name__ == "__main__":
