@@ -30,6 +30,16 @@ is attached — MicroPythonOS auto-detects it at boot and registers its
 keyboard as just another input source, so `bomberboy.py` doesn't need to
 know or care which keyboard the key events are actually coming from.
 
+The Fri3d DJ Add-on is also probed directly at app startup for big-button
+accessibility input. Its existing 8-button pad order is translated into a
+linear, labelled top row for player-1 movement (left/up/down/right), plus the
+entire bottom row as one large, redundant bomb target. This gives one player
+complete big-button control against the AI or a remote opponent, without
+requiring the badge joystick. The gameplay mapping lives in `dj_addon.py` so
+it is easy to tune after hands-on accessibility testing. If the
+add-on or its driver is unavailable, Bomberboy silently keeps the normal
+keyboard/joystick controls.
+
 Remote mode automatically discovers another nearby badge over ESP-NOW. The
 badge with the lower MAC address hosts the match, chooses the level seed, and
 plays as player 1. Both badges build the same level with a project-owned 32-bit

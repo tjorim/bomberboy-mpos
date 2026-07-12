@@ -92,3 +92,13 @@ boot and registers its keyboard (`fri3d_communicator_keyboard.py`) as a
 regular LVGL indev in the same input group as the joystick -- no app-level
 detection or wiring needed, it Just Works the same way the desktop
 simulator's keyboard does.
+
+As an accessibility alternative, the app also probes the Fri3d DJ Add-on at
+startup and polls its eight large silicone buttons every 100ms when present.
+The default mapping follows the existing DJ demo app's raw-to-pad order: the
+top row is a labelled left/up/down/right movement bank rather than pretending
+the rectangular layout is a D-pad. Every button in the bottom row places the
+local player's bomb, making the whole row a redundant large target. This gives
+one player complete big-button control in AI and remote matches. The mapping
+is isolated in `bomberboy/dj_addon.py` so hands-on accessibility testing can
+tune it without changing the integration.

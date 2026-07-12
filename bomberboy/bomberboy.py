@@ -18,6 +18,7 @@ import lvgl as lv
 from mpos import Activity, AudioManager, DisplayMetrics, TaskManager
 
 import ai
+import dj_addon
 import led_indicator
 from curtain import Curtain
 from levels import LEVELS
@@ -56,11 +57,13 @@ class Bomberboy(Activity):
         self.result_label = None
         self.tick_timer = None
         self.ai_timer = None
+        self.dj_timer = None
         self.curtain = None
         self.two_player = False
         self.mode = "bot"
         self.level_index = None
         self.result_shown = False
+        self.dj_input = dj_addon.DJInput.probe()
         self.network_link = None
         self.network_peer = None
         self.network_seed = None
@@ -302,10 +305,12 @@ class Bomberboy(Activity):
         if self.game is not None and self.tick_timer is None:
             self.tick_timer = lv.timer_create(self._on_tick, TICK_MS, None)
             self.ai_timer = lv.timer_create(self._on_ai_tick, AI_THINK_MS, None)
+            if self.dj_input is not None:
+                self.dj_timer = lv.timer_create(self._on_dj_tick, dj_addon.REFRESH_MS, None)
 
     def onPause(self, screen):
         super().onPause(screen)
-        for attr in ("tick_timer", "ai_timer"):
+        for attr in ("tick_timer", "ai_timer", "dj_timer"):
             timer = getattr(self, attr)
             if timer is not None:
                 timer.delete()
@@ -346,26 +351,42 @@ class Bomberboy(Activity):
             if action is not None:
                 self.network_sync.queue(action)
             return
-        human = self.game.players[0]
-        moved = False
         if key == lv.KEY.LEFT:
-            moved = self.game.move_player(human, LEFT)
+            self._apply_player_action(0, "move", LEFT)
         elif key == lv.KEY.RIGHT:
-            moved = self.game.move_player(human, RIGHT)
+            self._apply_player_action(0, "move", RIGHT)
         elif key == lv.KEY.UP:
-            moved = self.game.move_player(human, UP)
+            self._apply_player_action(0, "move", UP)
         elif key == lv.KEY.DOWN:
-            moved = self.game.move_player(human, DOWN)
+            self._apply_player_action(0, "move", DOWN)
         elif key in (lv.KEY.ENTER, 0x20):
-            if self.game.place_bomb(human):
-                self._play("BombDrop.wav")
+            self._apply_player_action(0, "bomb")
         elif self.two_player and key in _P2_KEYS:
-            moved = self.game.move_player(self.game.players[1], _P2_KEYS[key])
+            self._apply_player_action(1, "move", _P2_KEYS[key])
         elif self.two_player and key == _P2_BOMB_KEY:
-            if self.game.place_bomb(self.game.players[1]):
+            self._apply_player_action(1, "bomb")
+
+    def _apply_player_action(self, player_index, kind, direction=None):
+        if self.game is None or self.game.game_over:
+            return
+        if player_index >= len(self.game.players):
+            return
+        if player_index == 1 and not self.two_player:
+            return
+        player = self.game.players[player_index]
+        if kind == "move" and direction is not None:
+            if self.game.move_player(player, direction):
+                self._refresh()
+        elif kind == "bomb":
+            if self.game.place_bomb(player):
                 self._play("BombDrop.wav")
-        if moved:
-            self._refresh()
+                self._refresh()
+
+    def _on_dj_tick(self, timer):
+        if self.dj_input is None or self.game is None or self.game.game_over:
+            return
+        for player_index, kind, direction in self.dj_input.read_actions():
+            self._apply_player_action(player_index, kind, direction)
 
     def _on_tick(self, timer):
         if self.game is None or self.mode == "remote":
