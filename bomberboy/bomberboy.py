@@ -12,8 +12,10 @@ through the same LVGL input group, so this Activity doesn't need to
 know or care which one is actually plugged in.
 """
 
+import random
+
 import lvgl as lv
-from mpos import Activity, AudioManager, DisplayMetrics
+from mpos import Activity, AudioManager, DisplayMetrics, TaskManager
 
 import ai
 import dj_addon
@@ -21,6 +23,15 @@ import led_indicator
 from curtain import Curtain
 from levels import LEVELS
 from model import DOWN, Game, LEFT, RIGHT, UP
+from network_play import (
+    BROADCAST_MAC,
+    FrameSynchronizer,
+    EspNowLink,
+    ack_packet,
+    hello_packet,
+    parse_packet,
+    start_packet,
+)
 from render import BoardRenderer
 
 HUD_HEIGHT = 20
@@ -49,26 +60,42 @@ class Bomberboy(Activity):
         self.dj_timer = None
         self.curtain = None
         self.two_player = False
+        self.mode = "bot"
         self.level_index = None
         self.result_shown = False
         self.dj_input = dj_addon.DJInput.probe()
+        self.network_link = None
+        self.network_peer = None
+        self.network_seed = None
+        self.network_player_id = None
+        self.network_sync = None
+        self.network_running = False
+        self.network_pairing = False
+        self.network_time = 0
+        self.network_silence = 0
         self._show_menu()
 
     def _show_menu(self):
         screen = lv.obj()
         title = lv.label(screen)
-        title.set_text("Bomberboy - 2 Player" if self.two_player else "Bomberboy - vs Bot")
+        titles = {"bot": "Bomberboy - vs Bot", "local": "Bomberboy - Local", "remote": "Bomberboy - Remote"}
+        title.set_text(titles[self.mode])
         title.align(lv.ALIGN.TOP_MID, 0, 8)
 
         bot_btn = lv.button(screen)
         lv.label(bot_btn).set_text("vs Bot")
-        bot_btn.align(lv.ALIGN.TOP_MID, -50, 32)
-        bot_btn.add_event_cb(lambda e: self._set_mode(False), lv.EVENT.CLICKED, None)
+        bot_btn.align(lv.ALIGN.TOP_MID, -92, 32)
+        bot_btn.add_event_cb(lambda e: self._set_mode("bot"), lv.EVENT.CLICKED, None)
 
         two_p_btn = lv.button(screen)
-        lv.label(two_p_btn).set_text("2 Player")
-        two_p_btn.align(lv.ALIGN.TOP_MID, 50, 32)
-        two_p_btn.add_event_cb(lambda e: self._set_mode(True), lv.EVENT.CLICKED, None)
+        lv.label(two_p_btn).set_text("Local")
+        two_p_btn.align(lv.ALIGN.TOP_MID, 0, 32)
+        two_p_btn.add_event_cb(lambda e: self._set_mode("local"), lv.EVENT.CLICKED, None)
+
+        remote_btn = lv.button(screen)
+        lv.label(remote_btn).set_text("Remote")
+        remote_btn.align(lv.ALIGN.TOP_MID, 92, 32)
+        remote_btn.add_event_cb(lambda e: self._set_mode("remote"), lv.EVENT.CLICKED, None)
 
         level_list = lv.list(screen)
         level_list.set_size(lv.pct(90), lv.pct(60))
@@ -79,15 +106,26 @@ class Bomberboy(Activity):
 
         self.setContentView(screen)
 
-    def _set_mode(self, two_player):
-        self.two_player = two_player
+    def _set_mode(self, mode):
+        self.mode = mode
+        self.two_player = mode != "bot"
         self._show_menu()
 
     def _start_level(self, level_index):
         self._play("Select.wav")
         self.level_index = level_index
+        if self.mode == "remote":
+            self._start_pairing()
+            return
+        self._begin_game()
+
+    def _begin_game(self, seed=None):
         self.result_shown = False
-        self.game = Game(LEVELS[level_index]())
+        if self.mode == "remote":
+            self.network_time = 0
+            self.game = Game(LEVELS[self.level_index](), seed=seed, clock=lambda: self.network_time)
+        else:
+            self.game = Game(LEVELS[self.level_index]())
 
         screen = lv.obj()
         screen.set_style_pad_all(0, 0)
@@ -117,6 +155,146 @@ class Bomberboy(Activity):
         self.curtain = Curtain(screen, DisplayMetrics.width(), DisplayMetrics.height())
         self.curtain.open(on_done=self._clear_curtain)
 
+        if self.mode == "remote":
+            self.network_pairing = False
+            self.network_running = True
+            self.network_sync = FrameSynchronizer(self.network_player_id)
+            self.network_silence = 0
+            TaskManager.create_task(self._network_game_loop())
+
+    def _start_pairing(self):
+        self._close_network()
+        screen = lv.obj()
+        label = lv.label(screen)
+        label.set_text("Looking for another badge...")
+        label.center()
+        self.network_status = label
+        self.setContentView(screen)
+        try:
+            self.network_link = EspNowLink()
+            self.network_link.open()
+        except Exception as error:
+            label.set_text("ESP-NOW unavailable\n%s" % error)
+            return
+        self.network_pairing = True
+        self.network_peer = None
+        self.network_seed = None
+        TaskManager.create_task(self.network_link.receive_loop(self._on_network_message))
+        TaskManager.create_task(self._pairing_loop())
+
+    async def _pairing_loop(self):
+        attempts = 0
+        while self.network_pairing and self.network_link is not None:
+            try:
+                await self.network_link.send(BROADCAST_MAC, hello_packet(self.level_index))
+                if self.network_peer is not None and self.network_player_id == 1:
+                    await self.network_link.send(
+                        self.network_peer, start_packet(self.level_index, self.network_seed)
+                    )
+            except Exception:
+                pass
+            attempts += 1
+            if attempts == 30 and self.network_peer is None:
+                self.network_status.set_text("No badge found. Still looking...")
+            await TaskManager.sleep_ms(500)
+
+    def _on_network_message(self, mac, message):
+        if mac is None:
+            self._network_failed("ESP-NOW receive failed")
+            return
+        parsed = parse_packet(message)
+        if parsed is None:
+            return
+        if self.network_pairing:
+            self._handle_pairing_message(mac, parsed)
+        elif self.network_running and mac == self.network_peer and parsed[0] == "S":
+            if parsed[2] == self.network_seed:
+                TaskManager.create_task(self.network_link.send(mac, ack_packet(self.network_seed)))
+        elif self.network_running and mac == self.network_peer and parsed[0] == "F":
+            if self.network_sync.receive(message):
+                self.network_silence = 0
+
+    def _handle_pairing_message(self, mac, parsed):
+        kind = parsed[0]
+        if kind == "H":
+            if mac == self.network_link.local_mac:
+                return
+            if self.network_peer is None or mac < self.network_peer:
+                self.network_peer = mac
+            if mac != self.network_peer:
+                return
+            self.network_link.add_peer(mac)
+            if self.network_link.local_mac < mac:
+                self.network_player_id = 1
+                if self.network_seed is None:
+                    self.network_seed = random.getrandbits(32)
+                self.network_status.set_text("Found peer. Starting match...")
+            else:
+                self.network_player_id = 2
+                self.network_status.set_text("Found peer. Waiting for host...")
+        elif kind == "S" and self.network_player_id == 2 and mac == self.network_peer:
+            _, level_index, seed = parsed
+            self.level_index = level_index
+            self.network_seed = seed
+            self.network_pairing = False
+            TaskManager.create_task(self._ack_and_start())
+        elif kind == "A" and self.network_player_id == 1 and mac == self.network_peer:
+            if parsed[1] == self.network_seed:
+                self._begin_game(seed=self.network_seed)
+
+    async def _ack_and_start(self):
+        try:
+            await self.network_link.send(self.network_peer, ack_packet(self.network_seed))
+            self._begin_game(seed=self.network_seed)
+        except Exception:
+            self._network_failed("Could not start remote match")
+
+    async def _network_game_loop(self):
+        while self.network_running and self.game is not None and not self.game.game_over:
+            try:
+                await self.network_link.send(self.network_peer, self.network_sync.frame_packet())
+            except Exception:
+                self.network_silence += 1
+            actions = self.network_sync.pop_ready()
+            if actions is not None:
+                self._apply_network_action(self.game.players[0], actions[0])
+                self._apply_network_action(self.game.players[1], actions[1])
+                self.network_time += TICK_MS
+                self.game.tick()
+                self._refresh()
+                if self.game.game_over:
+                    self._show_result()
+                    break
+            else:
+                self.network_silence += 1
+                if self.network_silence >= 100:
+                    self._network_failed("Peer disconnected")
+                    break
+            await TaskManager.sleep_ms(50)
+
+    def _apply_network_action(self, player, action):
+        directions = {"U": UP, "D": DOWN, "L": LEFT, "R": RIGHT}
+        if action in directions:
+            self.game.move_player(player, directions[action])
+        elif action == "B" and self.game.place_bomb(player):
+            self._play("BombDrop.wav")
+
+    def _network_failed(self, text):
+        self.network_running = False
+        self.network_pairing = False
+        if self.game is not None and self.result_label is not None:
+            self.result_label.set_text(text)
+            self.result_label.remove_flag(lv.obj.FLAG.HIDDEN)
+        elif hasattr(self, "network_status"):
+            self.network_status.set_text(text)
+
+    def _close_network(self):
+        self.network_running = False
+        self.network_pairing = False
+        if self.network_link is not None:
+            self.network_link.close()
+        self.network_link = None
+
     def _clear_curtain(self):
         if self.curtain is not None:
             self.curtain.delete()
@@ -139,12 +317,18 @@ class Bomberboy(Activity):
                 setattr(self, attr, None)
         self._clear_curtain()
         led_indicator.clear()
+        self._close_network()
 
     def onBackPressed(self, screen):
         # Handles both mid-game (abandon the match) and the post-game-over
         # result screen (go pick something else) the same way.
+        if self.network_pairing:
+            self._close_network()
+            self._show_menu()
+            return True
         if self.game is not None:
             self.game = None
+            self._close_network()
             led_indicator.clear()
             self._show_menu()
             return True
@@ -154,6 +338,19 @@ class Bomberboy(Activity):
         if self.game is None or self.game.game_over:
             return
         key = event.get_key()
+        if self.mode == "remote":
+            actions = {
+                lv.KEY.LEFT: "L",
+                lv.KEY.RIGHT: "R",
+                lv.KEY.UP: "U",
+                lv.KEY.DOWN: "D",
+                lv.KEY.ENTER: "B",
+                0x20: "B",
+            }
+            action = actions.get(key)
+            if action is not None:
+                self.network_sync.queue(action)
+            return
         human = self.game.players[0]
         moved = False
         if key == lv.KEY.LEFT:
@@ -196,7 +393,7 @@ class Bomberboy(Activity):
             self._apply_player_action(player_index, kind, direction)
 
     def _on_tick(self, timer):
-        if self.game is None:
+        if self.game is None or self.mode == "remote":
             return
         bombs_before = len(self.game.bombs)
         lives_before = {p.player_id: p.lives for p in self.game.players}
@@ -230,8 +427,12 @@ class Bomberboy(Activity):
     def _update_hud(self):
         p1, p2 = self.game.players
         led_indicator.update(p1.lives, p1.MAX_LIVES, p2.lives, p2.MAX_LIVES)
-        p1_label = "P1" if self.two_player else "You"
-        p2_label = "P2" if self.two_player else "Bot"
+        if self.mode == "remote":
+            p1_label = "You" if self.network_player_id == 1 else "Peer"
+            p2_label = "You" if self.network_player_id == 2 else "Peer"
+        else:
+            p1_label = "P1" if self.two_player else "You"
+            p2_label = "P2" if self.two_player else "Bot"
         self.hud.set_text(
             "%s: %d lives, %d bombs, flame %d   %s: %d lives, %d bombs, flame %d"
             % (p1_label, p1.lives, p1.bombs_available, p1.flame_range, p2_label, p2.lives, p2.bombs_available, p2.flame_range)
@@ -247,7 +448,13 @@ class Bomberboy(Activity):
         self.result_shown = True
 
         p1, p2 = self.game.players
-        if self.game.winner is p1:
+        if self.mode == "remote":
+            local_player = self.game.players[self.network_player_id - 1]
+            if self.game.winner is None:
+                text = "Draw."
+            else:
+                text = "You win!" if self.game.winner is local_player else "Peer wins."
+        elif self.game.winner is p1:
             text = "Player 1 wins!" if self.two_player else "You win!"
             self._play("Life.wav")
         elif self.game.winner is p2:
@@ -265,7 +472,10 @@ class Bomberboy(Activity):
         menu_btn = lv.button(self.game_screen)
         lv.label(menu_btn).set_text("Menu")
         menu_btn.align(lv.ALIGN.CENTER, 0, 74)
-        menu_btn.add_event_cb(lambda e: self._show_menu(), lv.EVENT.CLICKED, None)
+        menu_btn.add_event_cb(lambda e: (self._close_network(), self._show_menu()), lv.EVENT.CLICKED, None)
+
+        if self.mode == "remote":
+            self._close_network()
 
     def _play(self, filename):
         try:

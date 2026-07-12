@@ -389,5 +389,18 @@ class LevelGenerationTests(unittest.TestCase):
             self.assertTrue(grid[level.width - 2][level.height - 2].is_walkable())
 
 
+class DeterministicClockTests(unittest.TestCase):
+    def test_injected_clock_controls_bomb_fuse(self):
+        now = [0]
+        game = Game(OpenArenaLevel(), clock=lambda: now[0])
+        self.assertTrue(game.place_bomb(game.players[0]))
+        now[0] = model.BOMB_FUSE_MS - 1
+        game.tick()
+        self.assertEqual(len(game.bombs), 1)
+        now[0] = model.BOMB_FUSE_MS
+        game.tick()
+        self.assertEqual(len(game.bombs), 0)
+
+
 if __name__ == "__main__":
     unittest.main()

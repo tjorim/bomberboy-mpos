@@ -24,6 +24,15 @@ def grid_signature(grid, width, height):
     return tuple(signature)
 
 
+def powerup_signature(grid, width, height):
+    return tuple(
+        (x, y, grid[x][y].kind)
+        for y in range(height)
+        for x in range(width)
+        if isinstance(grid[x][y], PowerUp)
+    )
+
+
 class LevelInvariantTests(unittest.TestCase):
     def test_pillars_are_at_even_coordinates(self):
         for level_cls in LEVELS:
@@ -45,6 +54,50 @@ class LevelInvariantTests(unittest.TestCase):
 
 
 class SeededLevelTests(unittest.TestCase):
+    def test_seeded_layouts_have_stable_signatures(self):
+        expected = {
+            MazeLevel: (
+                (9, 1, 4),
+                (9, 2, 2),
+                (7, 3, 6),
+                (11, 3, 2),
+                (1, 5, 0),
+                (2, 5, 5),
+                (5, 5, 5),
+                (8, 5, 3),
+                (9, 5, 4),
+                (13, 5, 5),
+                (1, 7, 2),
+                (4, 7, 5),
+                (5, 7, 0),
+                (7, 7, 4),
+                (11, 7, 2),
+                (3, 8, 6),
+                (5, 9, 5),
+                (9, 9, 5),
+            ),
+            PortalMazeLevel: (
+                (11, 1, 5),
+                (5, 3, 4),
+                (9, 3, 6),
+                (13, 3, 0),
+                (1, 5, 4),
+                (6, 5, 5),
+                (8, 5, 4),
+                (9, 6, 0),
+                (5, 7, 4),
+                (8, 7, 2),
+                (13, 7, 2),
+                (1, 8, 5),
+                (3, 8, 2),
+                (8, 9, 3),
+            ),
+        }
+        for level_cls, signature in expected.items():
+            level = level_cls()
+            grid = level.build_grid(seed=0xB0B)
+            self.assertEqual(powerup_signature(grid, level.width, level.height), signature, msg=level.name)
+
     def test_seeded_random_levels_are_reproducible(self):
         for level_cls in (MazeLevel, PortalMazeLevel):
             first = level_cls()
