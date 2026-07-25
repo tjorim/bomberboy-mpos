@@ -68,5 +68,6 @@ jobs:
           app-dir: bomberboy
           mpk-path: ${{ steps.build.outputs.mpk-path }}
           categories: Game
+          git-url: https://github.com/tjorim/bomberboy-mpos
         env:
           BADGEHUB_API_TOKEN: ${{ secrets.BADGEHUB_API_TOKEN }}
