@@ -43,7 +43,7 @@ jobs:
 
       - name: Build .mpk
         id: build
-        uses: tjorim/mpos-package-mpk@v1
+        uses: tjorim/mpos-package-mpk@v1.0.3
         with:
           app-dir: bomberboy
 
@@ -61,7 +61,7 @@ jobs:
 
       - name: Publish to BadgeHub
         if: startsWith(github.ref, 'refs/tags/v') && env.BADGEHUB_API_TOKEN != ''
-        uses: tjorim/mpos-badgehub-publish@v1.0.11
+        uses: tjorim/mpos-badgehub-publish@v1.0.12
         with:
           slug: bomberboy
           api-token: ${{ secrets.BADGEHUB_API_TOKEN }}
