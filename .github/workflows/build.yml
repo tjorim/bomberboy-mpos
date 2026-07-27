@@ -6,6 +6,12 @@ on:
     tags: ['v[0-9]+.[0-9]+.[0-9]+']
   pull_request:
     branches: [main]
+  workflow_dispatch:
+    inputs:
+      release-tag:
+        description: 'Existing release tag to publish to BadgeHub (for example v0.1.8)'
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -15,6 +21,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs['release-tag'] || github.ref }}
 
       - uses: actions/setup-python@v7
         with:
@@ -24,10 +32,12 @@ jobs:
         run: python -m unittest discover tests
 
       - name: Stamp tag version into MANIFEST.JSON
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+        env:
+          RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs['release-tag'] || github.ref_name }}
         run: |
           set -e
-          VERSION="${GITHUB_REF_NAME#v}"
+          VERSION="${RELEASE_TAG#v}"
           python3 -c "
           import json
           path = 'bomberboy/MANIFEST.JSON'
@@ -60,8 +70,8 @@ jobs:
           files: ${{ steps.build.outputs.mpk-path }}
 
       - name: Publish to BadgeHub
-        if: startsWith(github.ref, 'refs/tags/v') && env.BADGEHUB_API_TOKEN != ''
-        uses: tjorim/mpos-badgehub-publish@v1.0.12
+        if: (startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch') && env.BADGEHUB_API_TOKEN != ''
+        uses: tjorim/mpos-badgehub-publish@v1.0.13
         with:
           slug: bomberboy
           api-token: ${{ secrets.BADGEHUB_API_TOKEN }}
