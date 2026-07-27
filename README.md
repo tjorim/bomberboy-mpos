@@ -101,6 +101,20 @@ To regenerate `original_sprites.py` from a fresh checkout of that repo:
 python scripts/convert_gba_sprites.py /path/to/bomberboy-gba
 ```
 
+## Where the audio comes from
+
+`bomberboy/sounds/*.wav` are IMA ADPCM-compressed (4-bit, ~74% smaller than
+the original 16-bit PCM they shipped as) with
+[adpcm-xq](https://github.com/dbry/adpcm-xq), the format MicroPythonOS's
+`AudioManager` decodes natively (see its
+[docs](https://docs.micropythonos.com/frameworks/audiomanager/)) — every KiB
+counts against the badge's ~1MB of free flash. The lossless PCM masters live
+in `sounds_src/` (not shipped with the app — only `bomberboy/` is copied to
+the device) so future changes re-encode from a clean source instead of
+compounding lossy ADPCM round-trips. `scripts/compress_sounds.sh` regenerates
+`bomberboy/sounds/` from `sounds_src/`; see the script for build/usage
+instructions.
+
 ## Also cross-pollinated from a third attempt
 
 There's a third, even-less-finished Bomberboy attempt,
@@ -144,11 +158,16 @@ teleport). Two things from it were worth carrying over on their own merits:
   - `sprites.py`, `render.py`, `curtain.py`, `bomberboy.py` — the LVGL-facing
     UI, the Activity entrypoint, input handling, audio, and the game/AI loop
     timers.
-  - `sounds/` — original `.wav` sound effects, reused as-is.
+  - `sounds/` — `.wav` sound effects, IMA ADPCM-compressed (see below) to
+    save space on the badge's limited flash.
+- `sounds_src/` — lossless PCM masters for `bomberboy/sounds/`, not shipped
+  with the app (see below).
 - `tests/` — `unittest`-based tests for the game logic (see below).
 - `scripts/dev-setup.md` — how to run this app against a MicroPythonOS
   checkout for manual testing.
 - `scripts/convert_gba_sprites.py` — regenerates `original_sprites.py`.
+- `scripts/compress_sounds.sh` — regenerates `bomberboy/sounds/` from
+  `sounds_src/`.
 
 ## Running the tests
 
