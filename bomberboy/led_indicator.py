@@ -1,5 +1,5 @@
 """Onboard-LED life counter, using whatever NeoPixel strip
-mpos.lights.LightsManager already has initialized -- 5 LEDs below the
+mpos's LightsManager already has initialized -- 5 LEDs below the
 screen on the Fri3d Camp 2026 Badge, a no-op everywhere else (including
 the desktop simulator, which has none).
 
@@ -11,7 +11,7 @@ constraint the way model.py does, but also has no reason to depend on
 the LVGL-facing sprites module).
 """
 
-import mpos.lights as LightsManager
+from mpos import LightsManager
 
 P1_COLOR = (0x1E, 0x88, 0xE5)
 P2_COLOR = (0xE5, 0x39, 0x35)
