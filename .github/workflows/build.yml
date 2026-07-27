@@ -43,7 +43,7 @@ jobs:
 
       - name: Build .mpk
         id: build
-        uses: tjorim/mpos-package-mpk@v1
+        uses: tjorim/mpos-package-mpk@v1.0.3
         with:
           app-dir: bomberboy
 
