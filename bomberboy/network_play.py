@@ -1,12 +1,28 @@
 """ESP-NOW transport and deterministic two-peer input synchronization."""
 
+import struct
+
 PROTOCOL = b"BB1"
+FRAME_PROTOCOL = b"BBF"
 BROADCAST_MAC = b"\xff\xff\xff\xff\xff\xff"
 NO_ACTION = "-"
 VALID_ACTIONS = (NO_ACTION, "U", "D", "L", "R", "B")
+_ACTION_TO_CODE = {action: code for code, action in enumerate(VALID_ACTIONS)}
+_FRAME_FORMAT = ">3sIBiB"
+_FRAME_SIZE = struct.calcsize(_FRAME_FORMAT)
 
 
 def _packet(*parts):
+    if parts and parts[0] == "F":
+        _, frame, action, previous_frame, previous_action = parts
+        return struct.pack(
+            _FRAME_FORMAT,
+            FRAME_PROTOCOL,
+            int(frame),
+            _ACTION_TO_CODE[action],
+            int(previous_frame),
+            _ACTION_TO_CODE[previous_action],
+        )
     return b"|".join((PROTOCOL,) + tuple(str(part).encode() for part in parts))
 
 
@@ -24,7 +40,22 @@ def ack_packet(seed):
 
 def parse_packet(message):
     try:
-        parts = bytes(message).split(b"|")
+        message = bytes(message)
+        if len(message) == _FRAME_SIZE and message[:3] == FRAME_PROTOCOL:
+            _magic, frame, action_code, previous_frame, previous_code = struct.unpack(
+                _FRAME_FORMAT,
+                message,
+            )
+            if action_code >= len(VALID_ACTIONS) or previous_code >= len(VALID_ACTIONS):
+                return None
+            return (
+                "F",
+                frame,
+                VALID_ACTIONS[action_code],
+                previous_frame,
+                VALID_ACTIONS[previous_code],
+            )
+        parts = message.split(b"|")
         if len(parts) < 2 or parts[0] != PROTOCOL:
             return None
         kind = parts[1].decode()
@@ -34,6 +65,10 @@ def parse_packet(message):
             return kind, int(parts[2]), int(parts[3])
         if kind == "A" and len(parts) == 3:
             return kind, int(parts[2])
+        # Accept the original textual frame format while deployed badges
+        # converge on the compact sender. Older receivers cannot understand
+        # BBF packets, but this keeps recorded packets and newer receivers
+        # backward-compatible at the parser boundary.
         if kind == "F" and len(parts) == 6:
             action = parts[3].decode()
             previous = parts[5].decode()

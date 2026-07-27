@@ -55,6 +55,16 @@ double-check these first:
 - `lv.canvas` buffer size (300x220x4 bytes ~= 264KB) — fine on desktop and
   on ESP32-S3 with PSRAM, but worth confirming it doesn't blow LVGL's
   configured memory pool on your specific board.
+- `render.py` blits whole sprite rows straight into that canvas buffer
+  rather than calling `lv_canvas_set_px()` per pixel, working out the
+  buffer's bytes-per-pixel and row stride at startup by writing a probe
+  pixel and seeing where it landed. If a build hands
+  `lv_canvas_set_buffer()` a copy instead of adopting the bytearray it was
+  given (or uses an indexed color format, where several pixels share a
+  byte), the probe fails and the renderer falls back to the old per-pixel
+  path -- correct, just slow. So if the board paints fine but level loads
+  still feel sluggish, check `renderer._stride` in a REPL: 0 means the
+  fallback is active.
 - The mode-toggle buttons on the main menu, and the "Play Again"/"Menu"
   buttons on the result screen, use fixed pixel offsets (`.align(lv.ALIGN.
   CENTER, 0, 30)` etc.) rather than a layout container -- confirm they

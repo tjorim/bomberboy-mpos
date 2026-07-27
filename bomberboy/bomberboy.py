@@ -50,6 +50,7 @@ _P2_BOMB_KEY = ord("f")
 # a network action instead of touching self.game directly, so both peers
 # apply it on the same synchronized frame.
 _DIRECTION_TO_NETWORK_ACTION = {UP: "U", DOWN: "D", LEFT: "L", RIGHT: "R"}
+_NETWORK_ACTION_TO_DIRECTION = {"U": UP, "D": DOWN, "L": LEFT, "R": RIGHT}
 
 _APP_DIR = "/".join(__file__.replace("\\", "/").split("/")[:-1])
 
@@ -78,6 +79,7 @@ class Bomberboy(Activity):
         self.network_pairing = False
         self.network_time = 0
         self.network_silence = 0
+        self._last_hud_text = None
         # Tracks whether the currently-shown screen is the main menu, so
         # onBackPressed() can always route back to it from any other screen
         # this Activity owns (pairing search, pairing error, in-game, result)
@@ -190,6 +192,7 @@ class Bomberboy(Activity):
         self._stop_game_timers()
         self._on_menu = False
         self.result_shown = False
+        self._last_hud_text = None
         if self.mode == "remote":
             self.network_time = 0
             self.game = Game(LEVELS[self.level_index](), seed=seed, clock=lambda: self.network_time)
@@ -372,9 +375,9 @@ class Bomberboy(Activity):
             await TaskManager.sleep_ms(50)
 
     def _apply_network_action(self, player, action):
-        directions = {"U": UP, "D": DOWN, "L": LEFT, "R": RIGHT}
-        if action in directions:
-            self.game.move_player(player, directions[action])
+        direction = _NETWORK_ACTION_TO_DIRECTION.get(action)
+        if direction is not None:
+            self.game.move_player(player, direction)
         elif action == "B" and self.game.place_bomb(player):
             self._play("BombDrop.wav")
 
@@ -513,12 +516,12 @@ class Bomberboy(Activity):
         if self.game is None or self.mode == "remote":
             return
         bombs_before = len(self.game.bombs)
-        lives_before = {p.player_id: p.lives for p in self.game.players}
-        on_fire_before = {p.player_id: p.on_fire for p in self.game.players}
+        lives_before = tuple(player.lives for player in self.game.players)
+        on_fire_before = tuple(player.on_fire for player in self.game.players)
         self.game.tick()
         if len(self.game.bombs) < bombs_before:
             self._play("BombeExplode.wav")
-        for player in self.game.players:
+        for index, player in enumerate(self.game.players):
             # Warning.wav previously only played once the ~1-second burn
             # resolved and a life was actually lost (model.BOMB_BURN_MS) --
             # a delayed damage notification, not a warning. Play it the
@@ -526,9 +529,9 @@ class Bomberboy(Activity):
             # moment to react (though move_player()/place_bomb() both
             # already block input while on_fire, so "react" here mostly
             # means "notice why the badge stopped responding").
-            if player.on_fire and not on_fire_before[player.player_id]:
+            if player.on_fire and not on_fire_before[index]:
                 self._play("Warning.wav")
-            if player.lives < lives_before[player.player_id]:
+            if player.lives < lives_before[index]:
                 self._play("Die.wav" if player.is_dead else "Warning.wav")
         self._refresh()
         if self.game.game_over:
@@ -560,13 +563,16 @@ class Bomberboy(Activity):
         else:
             p1_label = "P1" if self.two_player else "You"
             p2_label = "P2" if self.two_player else "Bot"
-        self.hud.set_text(
+        text = (
             "%s: %d lives, %d bombs, flame %d%s   %s: %d lives, %d bombs, flame %d%s"
             % (
                 p1_label, p1.lives, p1.bombs_available, p1.flame_range, self._speed_suffix(p1),
                 p2_label, p2.lives, p2.bombs_available, p2.flame_range, self._speed_suffix(p2),
             )
         )
+        if text != self._last_hud_text:
+            self.hud.set_text(text)
+            self._last_hud_text = text
 
     @staticmethod
     def _speed_suffix(player):

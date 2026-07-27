@@ -1,16 +1,30 @@
 import os
 import sys
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "bomberboy"))
 
 import model
+import ai
 from ai import THINK_MS, _bfs_nearest, _live_bomb_threats, choose_action, danger_cells
 from levels import OpenArenaLevel, PortalMazeLevel
 from model import Bomb, Crate, Floor, Game, Gunpowder, Wall
 
 
 class DangerAvoidanceTests(unittest.TestCase):
+    def test_one_decision_scans_the_gunpowder_network_once(self):
+        game = Game(OpenArenaLevel())
+        bot, opponent = game.players
+        bomb = Bomb(opponent, opponent.x - 1, opponent.y, Gunpowder())
+        game.set_tile(bomb.x, bomb.y, bomb)
+        game.bombs.append(bomb)
+
+        with mock.patch("ai._gunpowder_network", wraps=ai._gunpowder_network) as scan:
+            choose_action(game, bot, opponent)
+
+        scan.assert_called_once_with(game)
+
     def test_bot_flees_when_standing_in_a_pending_blast(self):
         game = Game(OpenArenaLevel())
         bot, opponent = game.players

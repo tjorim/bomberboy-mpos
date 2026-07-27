@@ -5,6 +5,7 @@ import unittest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "bomberboy"))
 
 from network_play import (
+    FRAME_PROTOCOL,
     FrameSynchronizer,
     ack_packet,
     hello_packet,
@@ -23,6 +24,26 @@ class PacketTests(unittest.TestCase):
     def test_foreign_and_malformed_packets_are_ignored(self):
         for packet in (b"other", b"BB1|F|bad|U|-1|-", b"BB1|F|0|X|-1|-"):
             self.assertIsNone(parse_packet(packet))
+
+    def test_frame_packets_use_the_compact_binary_format(self):
+        packet = _packet("F", 123456, "R", 123455, "B")
+
+        self.assertEqual(packet[:3], FRAME_PROTOCOL)
+        self.assertEqual(len(packet), 13)
+        self.assertNotIn(b"|", packet)
+        self.assertEqual(parse_packet(packet), ("F", 123456, "R", 123455, "B"))
+
+    def test_unknown_binary_action_code_is_rejected(self):
+        packet = bytearray(_packet("F", 1, "R", 0, "B"))
+        packet[7] = 255
+
+        self.assertIsNone(parse_packet(packet))
+
+    def test_original_text_frame_packets_remain_parseable(self):
+        self.assertEqual(
+            parse_packet(b"BB1|F|5|L|4|R"),
+            ("F", 5, "L", 4, "R"),
+        )
 
 
 class FrameSynchronizerTests(unittest.TestCase):
