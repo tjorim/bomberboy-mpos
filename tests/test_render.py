@@ -36,7 +36,7 @@ sys.modules.setdefault("lvgl", _fake_lv)
 import render  # noqa: E402
 import sprites  # noqa: E402
 from levels import LEVELS  # noqa: E402
-from model import Game  # noqa: E402
+from model import Bomb, Floor, Game  # noqa: E402
 
 
 class FakeCanvas:
@@ -189,9 +189,53 @@ class BlitRenderTests(unittest.TestCase):
         renderer.render(force=True)
         painted = bytes(renderer._buf)
         renderer.canvas.invalidate_calls = 0
+        signature_calls = [0]
+        original = renderer._tile_signature
+
+        def counted(x, y):
+            signature_calls[0] += 1
+            return original(x, y)
+
+        renderer._tile_signature = counted
         renderer.render()
+        self.assertEqual(signature_calls[0], 0)
         self.assertEqual(renderer.canvas.invalidate_calls, 0)
         self.assertEqual(bytes(renderer._buf), painted)
+
+    def test_only_a_model_dirty_cell_is_rescanned(self):
+        game, renderer = _renderer(Xrgb8888Canvas)
+        renderer.render(force=True)
+        signature_calls = []
+        original = renderer._tile_signature
+
+        def counted(x, y):
+            signature_calls.append((x, y))
+            return original(x, y)
+
+        renderer._tile_signature = counted
+        game.set_tile(2, 2, Floor())
+        renderer.render()
+
+        self.assertEqual(signature_calls, [(2, 2)])
+
+    def test_live_bomb_is_rechecked_when_its_blink_phase_changes(self):
+        now = [0]
+        game = Game(LEVELS[0](), seed=7, clock=lambda: now[0])
+        render.lv.canvas = Xrgb8888Canvas
+        renderer = render.BoardRenderer(None, game)
+        owner = game.players[0]
+        bomb = Bomb(owner, 2, 2, Floor(), placed_at=0)
+        game.set_tile(2, 2, bomb)
+        game.bombs.append(bomb)
+        renderer.render(force=True)
+        initial_signature = renderer._last_signature[2 * game.width + 2]
+        renderer.canvas.invalidate_calls = 0
+
+        now[0] = 1000
+        renderer.render()
+
+        self.assertNotEqual(renderer._last_signature[2 * game.width + 2], initial_signature)
+        self.assertEqual(renderer.canvas.invalidate_calls, 1)
 
     def test_moving_a_player_repaints_both_tiles(self):
         game, renderer = _renderer(Xrgb8888Canvas)

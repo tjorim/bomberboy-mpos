@@ -1,9 +1,9 @@
 """Draws the Bomberboy grid onto a single LVGL canvas.
 
-Only tiles whose visual state changed since the last frame are redrawn
-(dirty tracking keyed by a small per-cell signature), so a normal tick --
-a couple of players moving, a bomb blinking -- costs a handful of tile
-redraws rather than repainting all WIDTH*HEIGHT cells.
+The model records coordinates it mutates and the renderer adds the few
+time-driven bomb cells, then verifies only those cells against a small
+per-cell signature. A normal tick therefore examines and redraws a handful
+of tiles rather than scanning or repainting all WIDTH*HEIGHT cells.
 
 Tiles that *do* need redrawing are blitted a row at a time straight into
 the canvas' pixel buffer rather than pixel by pixel through
@@ -272,16 +272,26 @@ class BoardRenderer:
         sprite_for = self._sprite_for
         draw_tile = self._draw_tile
         drawn = False
-        for y in range(game.height):
-            row_base = y * width
-            for x in range(width):
-                signature = tile_signature(x, y)
-                index = row_base + x
-                if not force and last_signature[index] == signature:
-                    continue
-                last_signature[index] = signature
-                draw_tile(x, y, sprite_for(signature))
-                drawn = True
+        dirty = game.consume_dirty_tiles()
+        if force:
+            dirty = (
+                (x, y)
+                for y in range(game.height)
+                for x in range(width)
+            )
+        else:
+            # Bomb appearance changes with the clock even when the model does
+            # not mutate, so those few cells remain time-driven. Every other
+            # visual transition marks itself dirty in Game.
+            dirty.update((bomb.x, bomb.y) for bomb in game.bombs)
+        for x, y in dirty:
+            signature = tile_signature(x, y)
+            index = y * width + x
+            if not force and last_signature[index] == signature:
+                continue
+            last_signature[index] = signature
+            draw_tile(x, y, sprite_for(signature))
+            drawn = True
         if drawn:
             # _blit_tile() writes the buffer behind LVGL's back, so nothing
             # has told it the canvas changed; set_px() would have done this

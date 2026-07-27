@@ -258,11 +258,14 @@ class Game:
         self.players = level.place_players(self.grid)
         self.portals = level.portals
         self.bombs = []
+        # Coordinates whose rendered signature may have changed since the
+        # renderer last consumed them. Keeping this in the model means an
+        # idle frame no longer has to rescan all WIDTH*HEIGHT cells merely
+        # to discover that nothing changed.
+        self._dirty_tiles = set()
         self._burning = []  # list of dicts: {"x","y","expire_at"}
-        # Kept in lockstep with _burning's "tile" entries so is_burning() --
-        # called once per board tile on every render pass, i.e. up to a few
-        # hundred times a second during gameplay -- is an O(1) set lookup
-        # instead of an O(len(_burning)) scan of the whole list per tile.
+        # Kept in lockstep with _burning's "tile" entries so render and AI
+        # hazard checks are O(1) lookups instead of scans of the whole list.
         self._burning_tile_positions = set()
         self.game_over = False
         self.winner = None
@@ -294,8 +297,15 @@ class Game:
     def burning_tile_positions(self):
         return set(self._burning_tile_positions)
 
+    def consume_dirty_tiles(self):
+        """Return and clear coordinates changed since the previous render."""
+        dirty = self._dirty_tiles
+        self._dirty_tiles = set()
+        return dirty
+
     def set_tile(self, x, y, tile):
         self.grid[x][y] = tile
+        self._dirty_tiles.add((x, y))
 
     def other_players(self, player):
         return [p for p in self.players if p is not player]
@@ -315,7 +325,9 @@ class Game:
         if player.last_move_at is not None and _elapsed_ms(player.last_move_at, now) < player.move_cooldown_ms():
             return False
         player.last_move_at = now
-        player.facing = direction
+        if player.facing != direction:
+            player.facing = direction
+            self._dirty_tiles.add((player.x, player.y))
         dx, dy = DELTA[direction]
         tx, ty = player.x + dx, player.y + dy
         target = self.tile_at(tx, ty)
@@ -623,6 +635,7 @@ class Game:
             tile = self.tile_at(x, y)
             if isinstance(tile, Player) and not tile.is_dead:
                 tile.lives = 0
+                self._dirty_tiles.add((x, y))
                 return
         for x, y in (pos1, pos2):
             self.set_tile(x, y, Wall())
@@ -715,6 +728,7 @@ class Game:
         if player.on_fire or player.is_dead:
             return
         player.on_fire = True
+        self._dirty_tiles.add((player.x, player.y))
         self._burning.append({"kind": "player", "player": player, "started_at": self._clock()})
 
     def _mark_burning(self, x, y):
@@ -722,6 +736,7 @@ class Game:
             return
         self._burning.append({"kind": "tile", "x": x, "y": y, "started_at": self._clock()})
         self._burning_tile_positions.add((x, y))
+        self._dirty_tiles.add((x, y))
 
     def _resolve_burning(self, now):
         remaining = []
@@ -734,6 +749,7 @@ class Game:
             else:
                 self._extinguish_tile(entry["x"], entry["y"])
                 self._burning_tile_positions.discard((entry["x"], entry["y"]))
+                self._dirty_tiles.add((entry["x"], entry["y"]))
         self._burning = remaining
 
     def _extinguish_tile(self, x, y):
@@ -742,6 +758,7 @@ class Game:
             self.set_tile(x, y, Floor())
         elif isinstance(tile, PowerUp):
             tile.revealed = True
+            self._dirty_tiles.add((x, y))
         # Floor and Gunpowder tiles simply stop being drawn as on-fire;
         # the renderer derives that purely from the _burning list, so
         # nothing else to do here.
@@ -749,3 +766,4 @@ class Game:
     def _extinguish_player(self, player):
         player.on_fire = False
         player.hit()
+        self._dirty_tiles.add((player.x, player.y))

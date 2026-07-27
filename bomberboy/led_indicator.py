@@ -16,18 +16,24 @@ from mpos import LightsManager
 P1_COLOR = (0x1E, 0x88, 0xE5)
 P2_COLOR = (0xE5, 0x39, 0x35)
 OFF = (0, 0, 0)
+_last_state = None
 
 
 def update(p1_lives, p1_max_lives, p2_lives, p2_max_lives):
+    global _last_state
     if not LightsManager.is_available():
         return
     total = LightsManager.get_led_count()
     if total <= 0:
         return
+    state = (total, p1_lives, p1_max_lives, p2_lives, p2_max_lives)
+    if state == _last_state:
+        return
     half = total // 2
     _fill(0, half, p1_lives, p1_max_lives, P1_COLOR)
     _fill(half, total - half, p2_lives, p2_max_lives, P2_COLOR)
     LightsManager.write()
+    _last_state = state
 
 
 def _fill(start, count, lives, max_lives, color):
@@ -40,6 +46,8 @@ def _fill(start, count, lives, max_lives, color):
 
 
 def clear():
+    global _last_state
+    _last_state = None
     if LightsManager.is_available():
         LightsManager.clear()
         LightsManager.write()

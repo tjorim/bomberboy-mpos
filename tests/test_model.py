@@ -601,6 +601,7 @@ class ArenaShrinkTests(unittest.TestCase):
         self.assertTrue(game.game_over)
         # No wall placed this step -- the kill takes priority.
         self.assertNotIsInstance(game.tile_at(1, 1), Wall)
+        self.assertIn((1, 1), game.consume_dirty_tiles())
 
     def test_upcoming_positions_preview_wall_pairs_without_advancing_state(self):
         game = Game(OpenArenaLevel())
