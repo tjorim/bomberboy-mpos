@@ -104,6 +104,34 @@ class Bomberboy(Activity):
                 timer.delete()
                 setattr(self, attr, None)
 
+    def setContentView(self, screen):
+        # This Activity reuses one instance across several of its own
+        # screens (menu, in-game, result) for its whole lifetime, unlike
+        # most apps that call setContentView() once at launch and never
+        # again. mpos.ui.view.setContentView() always pushes a fresh
+        # screen_stack entry and never pops one for this kind of internal
+        # navigation -- only finish_current_activity() does that, and
+        # onBackPressed() below never reaches it while still inside this
+        # app (it returns True and calls _show_menu() instead). Left
+        # alone, every menu<->game<->result transition in a single play
+        # session leaks the previous screen's whole widget tree --
+        # including its canvas buffer -- into that list forever, which on
+        # a long session is exactly the kind of avoidable memory pressure
+        # that compounds the PSRAM allocation/write costs the renderer
+        # already has to work around. Since this Activity owns all of its
+        # own screens, popping and cleaning any of ITS OWN previous
+        # entries (never anyone else's, e.g. the launcher screen beneath
+        # the very first one) before pushing a new one keeps the stack at
+        # exactly one entry for this app for as long as it stays
+        # foreground.
+        import mpos.ui.view as view
+
+        while view.screen_stack and view.screen_stack[-1][0] is self:
+            _stale_activity, stale_screen, _stale_group, _stale_extra = view.screen_stack.pop()
+            if stale_screen:
+                stale_screen.clean()
+        super().setContentView(screen)
+
     def _replace_focus_group(self, objects, focused=None):
         """Make the visible view the sole owner of keyboard/joystick focus."""
         group = lv.group_get_default()

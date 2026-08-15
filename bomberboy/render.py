@@ -25,6 +25,8 @@ than using our bytearray in place -- the renderer silently falls back to
 the original per-pixel path, which is slow but always correct.
 """
 
+import gc
+
 import lvgl as lv
 
 import sprites
@@ -70,6 +72,13 @@ class BoardRenderer:
         height_px = game.height * TILE_SIZE
         self.canvas = lv.canvas(parent)
         self.canvas.set_size(width_px, height_px)
+        # The real per-pixel byte layout isn't known until it's probed
+        # below, and the probe needs an actual buffer installed first, so
+        # this starts with a worst-case (4 bytes/pixel, LVGL's largest
+        # native format) scratch buffer -- under-sizing it here would be
+        # unsafe, since canvas init/probing may touch the buffer based on
+        # LVGL's own idea of how big a WIDTHxHEIGHT native-format canvas
+        # is, not ours.
         self._buf = bytearray(width_px * height_px * 4)
         self.canvas.set_buffer(self._buf, width_px, height_px, lv.COLOR_FORMAT.NATIVE)
         # One slot per cell, indexed y * game.width + x. A flat list rather
@@ -82,6 +91,24 @@ class BoardRenderer:
         self._tile_bytes = {}
         if self._stride:
             self._draw_tile = self._blit_tile
+            # Now that the real layout is known, replace the worst-case
+            # scratch buffer with one sized for it. A 2-bytes-per-pixel
+            # board (e.g. RGB565, the Fri3d Camp 2026 badge's actual
+            # format) only needs half of what was allocated above; keeping
+            # the oversized buffer around permanently wastes the other
+            # half for the rest of the match, which is exactly the kind of
+            # avoidable memory pressure that can push a later allocation
+            # (on a long session with several level starts) into a
+            # MemoryError on constrained hardware. Dropping the old
+            # buffer's reference and collecting before allocating the
+            # smaller one keeps the peak usage from briefly requiring both
+            # at once.
+            needed = (height_px - 1) * self._stride + width_px * self._bytes_per_px
+            if needed < len(self._buf):
+                self._buf = None
+                gc.collect()
+                self._buf = bytearray(needed)
+                self.canvas.set_buffer(self._buf, width_px, height_px, lv.COLOR_FORMAT.NATIVE)
         else:
             self._draw_tile = self._set_px_tile
 
@@ -195,6 +222,58 @@ class BoardRenderer:
             buf[offset:offset + row_bytes] = row
             offset += stride
 
+    def _blit_rows(self, dirty_rows, width):
+        """Redraw whole canvas scanlines for each tile-row touched this frame.
+
+        On real hardware the canvas buffer is large enough to land in PSRAM,
+        where each bytearray slice-assignment costs roughly the same fixed
+        overhead regardless of its length (measured ~125x slower per call
+        than the same assignment into a small, SRAM-backed buffer -- see
+        commit description). _blit_tile() above pays that per-call cost
+        TILE_SIZE times for every single dirty tile (one slice-assignment
+        per sprite row), which is what made a full-board repaint take ~45s
+        on a Fri3d Camp 2026 badge despite costing ~200 total memcpy calls
+        on paper.
+
+        This assembles one full-width scanline per sprite row in a small
+        scratch bytearray (cheap: SRAM-backed, and per-tile-column writes
+        into it are cheap for the same reason small buffers are cheap
+        above) and issues exactly one slice-assignment into the PSRAM
+        buffer per scanline, cutting the call count by up to `width` (the
+        number of tiles across the board) for a full-board repaint -- the
+        same board that used to cost TILE_SIZE * width * height small
+        writes now costs TILE_SIZE * len(dirty_rows).
+
+        Tiles in a touched row that are *not* themselves dirty are
+        redrawn too (from their already-known, unchanged signature) so
+        the scanline write can stay a single contiguous span -- reading
+        their cached signature is cheap; it's the PSRAM write count that
+        is expensive, not the pixel-assembly work feeding it.
+        """
+        buf = self._buf
+        stride = self._stride
+        bytes_per_px = self._bytes_per_px
+        tile_row_bytes = TILE_SIZE * bytes_per_px
+        full_row_bytes = width * tile_row_bytes
+        sprite_for = self._sprite_for
+        last_signature = self._last_signature
+        tile_pixels = self._tile_pixels
+        for y in dirty_rows:
+            row_index = y * width
+            tiles = [
+                tile_pixels(sprite_for(last_signature[row_index + x]))
+                for x in range(width)
+            ]
+            base_offset = y * TILE_SIZE * stride
+            for py in range(TILE_SIZE):
+                scanline = bytearray(full_row_bytes)
+                col_offset = 0
+                for pixels in tiles:
+                    scanline[col_offset:col_offset + tile_row_bytes] = pixels[py]
+                    col_offset += tile_row_bytes
+                offset = base_offset + py * stride
+                buf[offset:offset + full_row_bytes] = scanline
+
     def _set_px_tile(self, x, y, pixel_grid):
         ox, oy = x * TILE_SIZE, y * TILE_SIZE
         set_px = self.canvas.set_px
@@ -270,8 +349,6 @@ class BoardRenderer:
         last_signature = self._last_signature
         tile_signature = self._tile_signature
         sprite_for = self._sprite_for
-        draw_tile = self._draw_tile
-        drawn = False
         dirty = game.consume_dirty_tiles()
         if force:
             dirty = (
@@ -284,16 +361,33 @@ class BoardRenderer:
             # not mutate, so those few cells remain time-driven. Every other
             # visual transition marks itself dirty in Game.
             dirty.update((bomb.x, bomb.y) for bomb in game.bombs)
+        # Cells actually needing a redraw, grouped by tile row -- only these
+        # ever reach _tile_signature(), same as before this cell was tracked
+        # per-row instead of drawn immediately (see test_only_a_model_dirty_
+        # cell_is_rescanned). The row grouping itself is what _blit_rows()
+        # below uses to cut the number of PSRAM writes; the fallback path
+        # still redraws exactly these cells and nothing more.
+        dirty_rows = {}
         for x, y in dirty:
             signature = tile_signature(x, y)
             index = y * width + x
             if not force and last_signature[index] == signature:
                 continue
             last_signature[index] = signature
-            draw_tile(x, y, sprite_for(signature))
-            drawn = True
-        if drawn:
-            # _blit_tile() writes the buffer behind LVGL's back, so nothing
-            # has told it the canvas changed; set_px() would have done this
-            # itself (once per pixel, which is part of what made it slow).
-            self.canvas.invalidate()
+            row = dirty_rows.get(y)
+            if row is None:
+                dirty_rows[y] = row = set()
+            row.add(x)
+        if not dirty_rows:
+            return
+        if self._stride:
+            self._blit_rows(dirty_rows, width)
+        else:
+            set_px_tile = self._set_px_tile
+            for y, xs in dirty_rows.items():
+                for x in xs:
+                    set_px_tile(x, y, sprite_for(last_signature[y * width + x]))
+        # _blit_rows()/_blit_tile() write the buffer behind LVGL's back, so
+        # nothing has told it the canvas changed; set_px() would have done
+        # this itself (once per pixel, which is part of what made it slow).
+        self.canvas.invalidate()
