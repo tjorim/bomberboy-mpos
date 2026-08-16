@@ -2,6 +2,15 @@
 
 import struct
 
+# ESP-NOW only reaches peers on the same Wi-Fi channel. MicroPythonOS keeps
+# station Wi-Fi state across boots (OTA/sync), so two badges can each be
+# parked on a different channel purely from their own unrelated Wi-Fi
+# history -- neither wlan.active(True) nor a broadcast asend() ever raises
+# over a channel mismatch, so pairing looks like it "just doesn't find" the
+# other badge with no error anywhere. Every badge hardcodes the same channel
+# so that history can't matter.
+NETWORK_CHANNEL = 6
+
 PROTOCOL = b"BB1"
 FRAME_PROTOCOL = b"BBF"
 BROADCAST_MAC = b"\xff\xff\xff\xff\xff\xff"
@@ -154,6 +163,18 @@ class EspNowLink:
             station_interface = network.STA_IF
         self.wlan = network.WLAN(station_interface)
         self.wlan.active(True)
+        try:
+            # Drop any AP association left over from a previous session --
+            # otherwise this badge stays on that AP's channel instead of the
+            # shared one below, and two badges with different Wi-Fi history
+            # end up on different channels despite both "succeeding" here.
+            self.wlan.disconnect()
+        except OSError:
+            pass
+        try:
+            self.wlan.config(channel=NETWORK_CHANNEL)
+        except (OSError, ValueError):
+            pass
         self.local_mac = bytes(self.wlan.config("mac"))
         self.radio = aioespnow.AIOESPNow()
         self.radio.active(True)
